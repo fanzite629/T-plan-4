@@ -36,6 +36,7 @@
     d.setDate(d.getDate() + n);
     return iso(d);
   }
+  const validTime = (s) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
   /* Monday of the week containing s. */
   function weekStart(s) {
     const d = new Date(s + 'T12:00:00');
@@ -60,7 +61,7 @@
       schedule: Timetable.empty(),
       settings: {
         agent: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', modelId: '', models: [], vision: null },
-        prefs: { segment: 25, dailyMinutes: null, bestTime: null, onboarded: false, timerCompact: false, listWidth: 320, name: '' },
+        prefs: { segment: 25, dailyMinutes: null, bestTime: null, onboarded: false, timerCompact: false, listWidth: 320, name: '', remindMinutes: 10 },
       },
     };
   }
@@ -87,6 +88,7 @@
     const goalIds = new Set(s.goals.map((x) => x.id));
     for (const t of s.tasks) {
       if (!validDate(t.date)) t.date = null;
+      if (!t.date || !validTime(t.time)) delete t.time; // a start time only means something on a dated task
       if (!spaceIds.has(t.spaceId)) t.spaceId = null;
       if (!goalIds.has(t.goalId)) t.goalId = null;
       if (!Array.isArray(t.steps) || !t.steps.length) delete t.steps;
@@ -132,6 +134,7 @@
     const title = cleanText(a.title, 150);
     if (!title) throw new Error(label + '缺少标题');
     const out = { title, date: validDate(a.date) ? a.date : null, minutes: cleanMinutes(a.minutes, 30), spaceId: pickSpace(state, a) };
+    if (out.date && validTime(a.time)) out.time = a.time;
     if (Array.isArray(a.steps) && a.steps.length) {
       out.steps = a.steps.slice(0, MAX_STEPS).map((step) => {
         const stepTitle = cleanText(isObject(step) ? step.title : step, 100);
@@ -178,6 +181,7 @@
         }
         if (a.date !== undefined) out.date = validDate(a.date) ? a.date : null;
         if (a.minutes !== undefined) out.minutes = cleanMinutes(a.minutes, t.minutes);
+        if (a.time !== undefined) out.time = validTime(a.time) ? a.time : null;
         if (Object.keys(out).length === 2) throw new Error('修改任务时没有给出新内容');
         return out;
       }
@@ -235,6 +239,7 @@
 
   function newTask(fields, now, origin, extra) {
     const task = { id: uid('t'), title: fields.title, date: fields.date, minutes: fields.minutes, spaceId: fields.spaceId, done: false, doneAt: null, createdAt: now, origin, ...extra };
+    if (fields.time) task.time = fields.time;
     if (fields.steps) task.steps = fields.steps.map((x) => ({ title: x.title, minutes: x.minutes, done: false }));
     return task;
   }
@@ -246,7 +251,8 @@
       created.push(task.id);
     } else if (a.type === 'update_task') {
       const t = s.tasks.find((x) => x.id === a.taskId);
-      for (const key of ['title', 'date', 'minutes']) if (a[key] !== undefined) t[key] = a[key];
+      for (const key of ['title', 'date', 'minutes', 'time']) if (a[key] !== undefined) t[key] = a[key];
+      if (!t.date || !t.time) delete t.time;
     } else if (a.type === 'complete_task') {
       const t = s.tasks.find((x) => x.id === a.taskId);
       if (!t.done) { t.done = true; t.doneAt = now; }
@@ -327,7 +333,14 @@
     }
     if (!a || a.type !== 'add_task') throw new Error('这一项不能修改');
     if (!a.steps) a.steps = [{ title: a.title, minutes: Math.min(180, a.minutes) }];
-    const step = a.steps[op.step];
+    editSteps(a.steps, op, s.settings.prefs.segment);
+    a.minutes = sum(a.steps, (x) => x.minutes);
+    message.proposal.edited = true;
+    return s;
+  }
+  /* The step operations shared by a pending proposal and a task that is already on the list. */
+  function editSteps(steps, op, segment) {
+    const step = steps[op.step];
     if (op.kind !== 'add' && !step) throw new Error('这一步已经不存在');
     if (op.kind === 'minutes') step.minutes = Math.min(180, Math.max(5, step.minutes + op.delta));
     else if (op.kind === 'title') {
@@ -335,18 +348,50 @@
       if (!title) throw new Error('步骤内容不能为空');
       step.title = title;
     } else if (op.kind === 'remove') {
-      if (a.steps.length <= 1) throw new Error('至少保留一步');
-      a.steps.splice(op.step, 1);
+      if (steps.length <= 1) throw new Error('至少保留一步');
+      steps.splice(op.step, 1);
     } else if (op.kind === 'move') {
       const to = op.step + op.dir;
-      if (to >= 0 && to < a.steps.length) a.steps.splice(to, 0, a.steps.splice(op.step, 1)[0]);
+      if (to >= 0 && to < steps.length) steps.splice(to, 0, steps.splice(op.step, 1)[0]);
     } else if (op.kind === 'add') {
-      if (a.steps.length >= MAX_STEPS) throw new Error('最多 ' + MAX_STEPS + ' 步');
-      a.steps.push({ title: cleanText(op.title, 100) || '新的一步', minutes: s.settings.prefs.segment || 25 });
+      if (steps.length >= MAX_STEPS) throw new Error('最多 ' + MAX_STEPS + ' 步');
+      steps.push({ title: cleanText(op.title, 100) || '新的一步', minutes: segment || 25 });
     } else throw new Error('不支持的修改');
-    a.minutes = sum(a.steps, (x) => x.minutes);
-    message.proposal.edited = true;
+  }
+  /* Adjusts the steps of a task after it was confirmed. Finished steps keep their place and length,
+     and the step being timed cannot be removed or moved, so recorded sessions stay true. */
+  function editTaskSteps(state, taskId, op) {
+    const s = clone(state);
+    const task = s.tasks.find((t) => t.id === taskId);
+    if (!task) throw new Error('任务已不存在');
+    if (task.done) throw new Error('任务已完成，不能再改分段');
+    if (!task.steps) task.steps = [{ title: task.title, minutes: Math.min(180, task.minutes), done: false }];
+    const target = task.steps[op.step];
+    const structural = op.kind === 'remove' || op.kind === 'move';
+    if (target && target.done && op.kind !== 'title') throw new Error('已完成的分段不能再改');
+    if (op.kind === 'move' && task.steps[op.step + op.dir] && task.steps[op.step + op.dir].done) throw new Error('不能移到已完成的分段前面');
+    if (structural && s.timer && s.timer.taskId === taskId) throw new Error('计时进行中，先结束计时再调整顺序或删除');
+    editSteps(task.steps, op, s.settings.prefs.segment);
+    for (const x of task.steps) x.done = !!x.done;
+    task.minutes = sum(task.steps, (x) => x.minutes);
     return s;
+  }
+
+  /* Ticks a task done or not done. If its timer is running, the time worked so far is recorded
+     first, so finishing by the checkbox leaves the same evidence as finishing by the timer. */
+  function toggleTask(state, taskId, now) {
+    const s = clone(state);
+    const task = s.tasks.find((t) => t.id === taskId);
+    if (!task) throw new Error('任务已不存在');
+    let session = null;
+    const timed = !!(s.timer && s.timer.taskId === taskId);
+    task.done = !task.done;
+    task.doneAt = task.done ? now : null;
+    if (task.done && timed) {
+      if (timerElapsed(s.timer, now) >= 60000) session = recordSession(s, now, false);
+      s.timer = null;
+    }
+    return { state: s, session, wasTiming: task.done && timed };
   }
 
   /* ---------- habits ---------- */
@@ -508,7 +553,7 @@
         return { title: g.title, deadline: g.deadline, milestones: g.milestones.map((m) => m.title), tasksDone: tasks.filter((t) => t.done).length, tasksTotal: tasks.length };
       }),
       openTasks: state.tasks.filter((t) => !t.done).slice(0, 200).map((t) => ({
-        taskId: t.id, title: t.title, date: t.date, minutes: t.minutes, space: spaceName(t.spaceId),
+        taskId: t.id, title: t.title, date: t.date, ...(t.time ? { time: t.time } : {}), minutes: t.minutes, space: spaceName(t.spaceId),
         ...(t.steps ? { stepsDone: t.steps.filter((x) => x.done).length, stepsTotal: t.steps.length } : {}),
       })),
       recentlyDone: state.tasks.filter((t) => t.done && t.doneAt && toDay(t.doneAt) >= recentCutoff).slice(-60).map((t) => ({
@@ -538,6 +583,7 @@
     let title = line;
     let date = null;
     let minutes = 30;
+    let time = null;
     const take = (re, fn) => {
       const m = title.match(re);
       if (m) { fn(m); title = title.replace(m[0], ' '); }
@@ -555,17 +601,27 @@
       date = d;
     });
     take(/今天|明天|后天/, (m) => { date = addDays(today, { 今天: 0, 明天: 1, 后天: 2 }[m[0]]); });
+    // A clock time needs 点 or a colon, so "2小时" and "30分钟" below are never read as one.
+    take(/(凌晨|早上|上午|中午|下午|傍晚|晚上)?\s*(\d{1,2})(?:点(半|[0-5]?\d分?)?|[:：]([0-5]\d))/, (m) => {
+      let hour = +m[2];
+      const minute = m[3] === '半' ? 30 : m[3] ? parseInt(m[3], 10) : m[4] ? +m[4] : 0;
+      if (/下午|傍晚|晚上/.test(m[1] || '') && hour < 12) hour += 12;
+      if (m[1] === '中午' && hour < 11) hour += 12;
+      const value = pad(hour) + ':' + pad(minute);
+      if (validTime(value)) time = value;
+    });
     take(/(\d+(?:\.\d+)?)\s*(?:个)?(?:小时|h\b)/i, (m) => { minutes = cleanMinutes(Number(m[1]) * 60, 30); });
     take(/(\d+)\s*(?:分钟|min\b|m\b)/i, (m) => { minutes = cleanMinutes(m[1], 30); });
     title = cleanText(title.replace(/^[\s\-•·\d.、)]+/, '').replace(/[，,。；;]+$/, ''), 150);
-    return title ? { type: 'add_task', title, date, minutes, space: null } : null;
+    if (!title) return null;
+    return time ? { type: 'add_task', title, date: date || today, time, minutes, space: null } : { type: 'add_task', title, date, minutes, space: null };
   }
 
   /* Evenly sized segments for one sitting, used when no model is connected. */
-  function splitIntoSteps(totalMinutes, segment) {
+  function splitIntoSteps(totalMinutes, segment, label) {
     const count = Math.min(MAX_STEPS, Math.max(1, Math.round(totalMinutes / segment)));
     const each = Math.round(totalMinutes / count);
-    return Array.from({ length: count }, (_, i) => ({ title: i === count - 1 && count > 1 ? '回顾并记下卡住的地方' : '第 ' + (i + 1) + ' 段', minutes: each }));
+    return Array.from({ length: count }, (_, i) => ({ title: i === count - 1 && count > 1 ? '回顾并记下卡住的地方' : label ? label + '（' + (i + 1) + '/' + count + '）' : '第 ' + (i + 1) + ' 段', minutes: each }));
   }
 
   function localReply(text, today, prefs = {}) {
@@ -577,7 +633,7 @@
       const task = parseLine(line, today);
       if (!task) continue;
       if (task.minutes >= 45) {
-        task.steps = splitIntoSteps(task.minutes, prefs.segment || 25);
+        task.steps = splitIntoSteps(task.minutes, prefs.segment || 25, task.title.slice(0, 80));
         if (!task.date) task.date = today;
       }
       actions.push(task);
@@ -587,7 +643,7 @@
       reply: !actions.length
         ? '现在是本地模式，我只能把你写的每一行变成任务。连接 AI 模型后，我才能读课件、回答问题和帮你做计划。'
         : planned
-          ? '现在是本地模式（没有连接 AI 模型），我按你习惯的 ' + (prefs.segment || 25) + ' 分钟把它分成了几段。连接模型后我可以根据课件内容来分。'
+          ? '现在是本地模式（没有连接 AI 模型），我按你习惯的 ' + (prefs.segment || 25) + ' 分钟把它等分成了几段，每段要做什么请点文字自己写。连接模型后我可以根据课件内容来分。'
           : '现在是本地模式（没有连接 AI 模型），我把每一行当作一件事。请检查下面的提议。',
       actions,
       options: [],
@@ -599,7 +655,7 @@
 
   return {
     VERSION, SPACE_COLORS, SPACE_TYPES, logMetric,
-    clone, uid, todayISO, validDate, addDays, weekStart,
+    clone, uid, todayISO, validDate, validTime, editTaskSteps, toggleTask, addDays, weekStart,
     emptyState, normalize, validateActions, resolveProposal, editProposal, addMemory,
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,
     buildProfile, buildContext, history, parseLine, splitIntoSteps, localReply,

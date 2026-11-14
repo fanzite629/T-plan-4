@@ -327,3 +327,66 @@ test('a measurement keeps one value per day and reports first and latest to the 
   const ctx = C.buildContext(s, TODAY, 'x');
   assert.deepEqual(ctx.metrics, [{ name: '体重', unit: 'kg', space: '习惯与健康', count: 2, first: { date: '2026-11-01', value: 72.46 }, latest: { date: '2026-11-14', value: 71.500 } }]);
 });
+
+test('a start time is parsed in local mode and only kept on a dated task', () => {
+  assert.deepEqual(C.parseLine('周五下午3点开会', TODAY), { type: 'add_task', title: '开会', date: '2026-11-20', time: '15:00', minutes: 30, space: null });
+  assert.equal(C.parseLine('明天 8:30 交作业 30分钟', TODAY).time, '08:30');
+  const evening = C.parseLine('晚上7点半跑步 40分钟', TODAY);
+  assert.deepEqual([evening.date, evening.time, evening.minutes], [TODAY, '19:30', 40]);
+  assert.equal(C.parseLine('单片机 2小时', TODAY).time, undefined);
+  const s = C.emptyState();
+  const checked = C.validateActions(s, [
+    { type: 'add_task', title: 'A', date: TODAY, time: '19:00', minutes: 30 },
+    { type: 'add_task', title: 'B', date: null, time: '19:00', minutes: 30 },
+    { type: 'add_task', title: 'C', date: TODAY, time: '25:00', minutes: 30 },
+  ]);
+  assert.deepEqual(checked.actions.map((a) => a.time), ['19:00', undefined, undefined]);
+  const raw = C.emptyState();
+  raw.tasks.push({ id: 'a', title: 'x', date: null, time: '09:00', minutes: 10 }, { id: 'b', title: 'y', date: TODAY, time: '09:00', minutes: 10 });
+  assert.deepEqual(C.normalize(raw).tasks.map((t) => t.time), [undefined, '09:00']);
+  assert.equal(C.buildContext(C.normalize(raw), TODAY, 'hi').openTasks[1].time, '09:00');
+});
+
+test('local mode names segments after the task instead of numbering them', () => {
+  const steps = C.localReply('学习单片机 2小时', TODAY, { segment: 30 }).actions[0].steps;
+  assert.deepEqual(steps.map((x) => x.title), ['学习单片机（1/4）', '学习单片机（2/4）', '学习单片机（3/4）', '回顾并记下卡住的地方']);
+});
+
+test('ticking a task done while its timer runs records the time worked', () => {
+  let s = C.startTimer(stateWithTask(), 't1', 1000);
+  const result = C.toggleTask(s, 't1', 1000 + 12 * MIN);
+  assert.equal(result.wasTiming, true);
+  assert.equal(result.state.timer, null);
+  assert.equal(result.state.tasks[0].done, true);
+  assert.deepEqual(result.state.sessions.map((x) => [x.taskId, x.actual, x.partial]), [['t1', 12, false]]);
+  // Under a minute is not evidence of work; unticking never records anything.
+  s = C.startTimer(stateWithTask(), 't1', 1000);
+  assert.equal(C.toggleTask(s, 't1', 1000 + 20000).state.sessions.length, 0);
+  const undone = C.toggleTask(result.state, 't1', 5);
+  assert.deepEqual([undone.state.tasks[0].done, undone.state.tasks[0].doneAt, undone.wasTiming, undone.state.sessions.length], [false, null, false, 1]);
+});
+
+test('steps of a confirmed task can be edited, within what the records allow', () => {
+  let s = stateWithTask();
+  s = C.editTaskSteps(s, 't1', { kind: 'add', title: '做习题' }); // a plain task becomes two steps
+  assert.deepEqual(s.tasks[0].steps.map((x) => [x.title, x.minutes, x.done]), [['Read chapter 3', 40, false], ['做习题', 25, false]]);
+  assert.equal(s.tasks[0].minutes, 65);
+  s = C.editTaskSteps(s, 't1', { kind: 'minutes', step: 1, delta: 5 });
+  s = C.editTaskSteps(s, 't1', { kind: 'title', step: 0, title: '读第三章' });
+  assert.deepEqual([s.tasks[0].steps[0].title, s.tasks[0].minutes], ['读第三章', 70]);
+  s.tasks[0].steps[0].done = true;
+  assert.throws(() => C.editTaskSteps(s, 't1', { kind: 'remove', step: 0 }), /已完成的分段/);
+  assert.throws(() => C.editTaskSteps(s, 't1', { kind: 'move', step: 1, dir: -1 }), /已完成的分段前面/);
+  const timing = C.startTimer(s, 't1', 1000);
+  assert.throws(() => C.editTaskSteps(timing, 't1', { kind: 'remove', step: 1 }), /计时进行中/);
+  assert.equal(C.editTaskSteps(timing, 't1', { kind: 'minutes', step: 1, delta: 5 }).tasks[0].steps[1].minutes, 35);
+});
+
+test('the agent stops between steps when asked, and offers no path tools', async () => {
+  assert.ok(!/read_path|list_dir/.test(Agent.SYSTEM_PROMPT));
+  const control = new AbortController();
+  let calls = 0;
+  const run = Agent.run({ context: {}, signal: control.signal, chat: async () => { calls++; control.abort(); return '{"tool":{"name":"get_history","args":{}}}'; }, tools: { get_history: () => ({}) } });
+  await assert.rejects(run, { name: 'AbortError' });
+  assert.equal(calls, 1);
+});

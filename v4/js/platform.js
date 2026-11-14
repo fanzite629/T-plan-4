@@ -21,16 +21,22 @@
     return { [fallbackProvider]: raw };
   }
 
-  async function request(url, options) {
+  const stoppedError = () => { const e = new Error('已停止'); e.name = 'AbortError'; return e; };
+  /* `signal` is the user's stop button; the timeout is separate, so the two give different messages. */
+  async function request(url, options, signal) {
     const control = new AbortController();
     const timer = setTimeout(() => control.abort(), TIMEOUT_MS);
+    const stop = () => control.abort();
+    if (signal) { if (signal.aborted) throw stoppedError(); signal.addEventListener('abort', stop, { once: true }); }
     let response;
     try {
       response = await fetch(url, { ...options, signal: control.signal });
     } catch (error) {
+      if (signal && signal.aborted) throw stoppedError();
       throw new Error(error.name === 'AbortError' ? '请求超时，请重试。' : '无法连接这个服务。请检查接口地址和网络；有些服务商不允许从浏览器直接访问。');
     } finally {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', stop);
     }
     const body = await response.json().catch(() => null);
     if (!response.ok) throw new Error(P.explain(response.status, body));
@@ -60,9 +66,9 @@
       return P.parseModels(await request(call.url, { headers: call.headers }));
     },
     /* `key` is passed when testing settings that are not saved yet. */
-    async chat(agent, system, user, images, key) {
+    async chat(agent, system, user, images, key, signal) {
       const call = P.chatRequest(agent, key === undefined ? browser.loadKey(agent.provider) : key, system, user, images);
-      return P.parseChat(agent, await request(call.url, { method: 'POST', headers: call.headers, body: JSON.stringify(call.body) }));
+      return P.parseChat(agent, await request(call.url, { method: 'POST', headers: call.headers, body: JSON.stringify(call.body) }, signal));
     },
   };
 
@@ -81,9 +87,18 @@
       else p.resolve(m);
     });
     /* Sends a request to the shell and waits for the reply with the same id. */
-    function ask(message, timeoutMs, cancelKind) {
+    function ask(message, timeoutMs, cancelKind, signal) {
       const id = 'rq_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       return new Promise((resolve, reject) => {
+        if (signal && signal.aborted) return reject(stoppedError());
+        if (signal) signal.addEventListener('abort', () => {
+          const p = pending.get(id);
+          if (!p) return;
+          clearTimeout(p.timer);
+          pending.delete(id);
+          if (cancelKind) webview.postMessage({ kind: cancelKind, id });
+          reject(stoppedError());
+        }, { once: true });
         const timer = setTimeout(() => {
           pending.delete(id);
           if (cancelKind) webview.postMessage({ kind: cancelKind, id });
@@ -93,8 +108,8 @@
         webview.postMessage({ ...message, id });
       });
     }
-    async function nativeRequest(call) {
-      const response = await ask({ kind: 'http-request', url: call.url, method: call.body ? 'POST' : 'GET', headers: call.headers, body: call.body ? JSON.stringify(call.body) : null }, TIMEOUT_MS, 'http-cancel');
+    async function nativeRequest(call, signal) {
+      const response = await ask({ kind: 'http-request', url: call.url, method: call.body ? 'POST' : 'GET', headers: call.headers, body: call.body ? JSON.stringify(call.body) : null }, TIMEOUT_MS, 'http-cancel', signal);
       let body;
       try { body = JSON.parse(response.text); } catch { throw new Error('模型服务返回的内容不是 JSON。'); }
       if (response.status < 200 || response.status >= 300) throw new Error(P.explain(response.status, body));
@@ -114,9 +129,9 @@
       readPath: async () => { throw new Error('请把文件拖进聊天框，或点击附件按钮选择文件。此版本不按任意路径读取文件。'); },
       listDir: async () => { throw new Error('此版本不列出本地文件夹，请把需要的文件拖进聊天框。'); },
       async listModels(agent, key) { return P.parseModels(await nativeRequest(P.modelsRequest(agent, key))); },
-      async chat(agent, system, user, images, key) {
+      async chat(agent, system, user, images, key, signal) {
         const call = P.chatRequest(agent, key === undefined ? desktop.loadKey(agent.provider) : key, system, user, images);
-        return P.parseChat(agent, await nativeRequest(call));
+        return P.parseChat(agent, await nativeRequest(call, signal));
       },
       openFloating: () => webview.postMessage({ kind: 'timer-open' }),
       updateTimer: (view) => webview.postMessage({ kind: 'timer-state', view }),

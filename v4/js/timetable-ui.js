@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const T = window.TPlanTimetable;
-  window.TPlanTimetableUI = function ({ getState, commit, toast, h, openWorkspace }) {
+  window.TPlanTimetableUI = function ({ getState, commit, toast, h, openWorkspace, openTask = () => {}, undoable = (label, apply) => apply() }) {
     let currentWeek = T.weekStart(new Date().toLocaleDateString('sv-SE')), activeDraft = null, jobId = 0;
     const dialog = h('dialog', { class: 'tt-dialog', 'aria-label': '导入课表' });
     const schoolDialog = h('dialog', { class: 'tt-dialog tt-school', 'aria-label': '学期与节次设置' });
@@ -57,12 +57,17 @@
           h('p', { class: 'sub' }, '来源：' + (course.source || '手动填写') + (course.weeks ? ' · 第 ' + course.weeks + ' 周' : '')),
           h('details', {}, h('summary', {}, '查看识别依据'), h('pre', {}, course.evidence || '无原文'))),
         h('div', { class: 'tt-dialog-foot' }, btn('编辑这条课程规则', () => { activeDraft = { rows: [{ ...course, selected: true }], reports: [], editId: course.id }; showPreview(); }),
-          btn('取消这一天的课', () => { if (!confirm('仅取消 ' + event.date + ' 这一次课程？')) return; const s = schedule(); const c = s.courses.find(x => x.id === course.id); c.excludedDates = [...new Set([...(c.excludedDates || []), event.date])]; if (save(s)) dialog.close(); }, 'ghost'),
-          btn('删除这条课程规则', () => { if (!confirm('删除这条规则及它展开的所有课程日期？')) return; const s = schedule(); s.courses = s.courses.filter(x => x.id !== course.id); if (save(s)) dialog.close(); }, 'danger')));
+          btn('取消这一天的课', () => { if (!confirm('仅取消 ' + event.date + ' 这一次课程？')) return; const s = schedule(); const c = s.courses.find(x => x.id === course.id); c.excludedDates = [...new Set([...(c.excludedDates || []), event.date])]; if (undoable('已取消 ' + event.date + ' 的这次课', () => save(s))) dialog.close(); }, 'ghost'),
+          btn('删除这条课程规则', () => { if (!confirm('删除这条规则及它展开的所有课程日期？')) return; const s = schedule(); s.courses = s.courses.filter(x => x.id !== course.id); if (undoable('课程规则已删除', () => save(s))) dialog.close(); }, 'danger')));
       openDialog(dialog);
     }
     function render() {
-      const s = schedule(), end = T.addDays(currentWeek, 6), ev = T.events(s, currentWeek, end);
+      const s = schedule(), end = T.addDays(currentWeek, 6), courses = T.events(s, currentWeek, end);
+      // Tasks that have a start time are drawn beside the courses, so the week shows what is really taken.
+      const clockText = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+      const timed = (getState().tasks || []).filter(t => t.date >= currentWeek && t.date <= end && /^\d\d:\d\d$/.test(t.time || '')).map(t => ({ task: t, title: t.title, date: t.date, startTime: t.time, endTime: clockText(Math.min(1439, T.minutes(t.time) + Math.max(15, t.minutes || 30))), room: '' }));
+      const ev = [...courses, ...timed].sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+      const clash = (a, b) => a !== b && (a.task || b.task ? !(a.task && a.task.done) && !(b.task && b.task.done) && a.startTime < b.endTime && b.startTime < a.endTime : T.overlaps(a, b));
       const main = document.querySelector('#main');
       let weekLabel = currentWeek + ' — ' + end;
       if (T.dateOK(s.settings.semesterStart) && currentWeek >= s.settings.semesterStart) {
@@ -89,19 +94,19 @@
         }
         if (group.length) groups.push({ items: group, columns: ends.length });
         for (const g of groups) for (const { e, col } of g.items) {
-          const conflict = dayEvents.some(other => T.overlaps(e, other));
-          placed.push(h('button', { class: 'tt-event' + (conflict ? ' conflict' : ''), style: 'top:' + ((T.minutes(e.startTime) - startMinute) * scale) + 'px;height:' + Math.max(25, (T.minutes(e.endTime) - T.minutes(e.startTime)) * scale - 3) + 'px;left:calc(' + col * 100 / g.columns + '% + 3px);width:calc(' + 100 / g.columns + '% - 6px)', onclick: () => details(e), title: e.title + '\n' + e.startTime + '–' + e.endTime + '\n' + e.room + (conflict ? '\n与其他课程重叠' : '') },
-            h('strong', {}, e.title), h('small', {}, e.startTime + '–' + e.endTime), e.room ? h('small', {}, e.room) : null, conflict ? h('small', {}, '时间冲突') : null));
+          const conflict = dayEvents.some(other => clash(e, other));
+          placed.push(h('button', { class: 'tt-event' + (e.task ? ' task' + (e.task.done ? ' done' : '') : '') + (conflict ? ' conflict' : ''), style: 'top:' + ((T.minutes(e.startTime) - startMinute) * scale) + 'px;height:' + Math.max(25, (T.minutes(e.endTime) - T.minutes(e.startTime)) * scale - 3) + 'px;left:calc(' + col * 100 / g.columns + '% + 3px);width:calc(' + 100 / g.columns + '% - 6px)', onclick: () => e.task ? openTask(e.task.id) : details(e), title: (e.task ? '任务：' : '') + e.title + '\n' + e.startTime + '–' + e.endTime + '\n' + e.room + (conflict ? '\n与其他安排重叠' : '') },
+            h('strong', {}, (e.task ? (e.task.done ? '✓ ' : '任务 · ') : '') + e.title), h('small', {}, e.startTime + '–' + e.endTime), e.room ? h('small', {}, e.room) : null, conflict ? h('small', {}, '时间冲突') : null));
         }
         lane.append(...placed); grid.append(lane);
       }
       const last = s.imports.at(-1);
       main.replaceChildren(...[h('header', { class: 'tt-header' }, h('div', {}, h('h2', {}, '课表'), h('p', { class: 'sub' }, '拖入课表，检查后自动填入每一天')),
-        h('div', { class: 'tt-actions' }, btn('学期与节次', () => settings()), btn('手动添加', () => { activeDraft = { rows: [{ title: '', weekday: '', weeks: '', periods: '', selected: true }], reports: [] }; showPreview(); }), btn('导入课表', () => openImport(), 'dark'))),
+        h('div', { class: 'tt-actions' }, btn('学期与节次', () => settings()), btn('手动添加', () => { activeDraft = { rows: [{ title: '', weekday: '', weeks: '', periods: '', selected: true }], reports: [], manual: true }; showPreview(); }), btn('导入课表', () => openImport(), 'dark'))),
         h('div', { class: 'tt-week-nav' }, btn('‹ 上周', () => { currentWeek = T.addDays(currentWeek, -7); render(); }, 'ghost'), h('strong', {}, weekLabel), btn('下周 ›', () => { currentWeek = T.addDays(currentWeek, 7); render(); }, 'ghost'), btn('本周', () => { currentWeek = T.weekStart(today()); render(); }, 'ghost')),
         !s.courses.length ? h('div', { class: 'tt-empty' }, h('strong', {}, '把课表文件拖到这里'), h('p', {}, 'PDF · 截图 · Word（.docx）· Excel（.xlsx）'), h('p', { class: 'sub' }, '先保存学校节次时间；导入后可修正课程、检查周次与冲突。'), btn('选择课表文件', () => openImport())) : null,
         h('div', { class: 'tt-grid-scroll' }, h('div', { class: 'tt-grid' }, header, grid)),
-        h('footer', { class: 'tt-footer' }, h('span', {}, '本周 ' + ev.length + ' 次课 · 已保存 ' + s.courses.length + ' 条课程规则'), last ? btn('撤销最近导入', () => { if (confirm('撤销「' + last.name + '」导入的课程？')) save(T.undo(schedule(), last.id)); }, 'ghost') : null)].filter(Boolean));
+        h('footer', { class: 'tt-footer' }, h('span', {}, '本周 ' + courses.length + ' 次课' + (timed.length ? ' · ' + timed.length + ' 个定了时间的任务' : '') + ' · 已保存 ' + s.courses.length + ' 条课程规则'), last ? btn('撤销最近导入', () => { if (confirm('撤销「' + last.name + '」导入的课程？')) save(T.undo(schedule(), last.id)); }, 'ghost') : null)].filter(Boolean));
     }
     function openImport(files) {
       jobId++; activeDraft = null;
@@ -160,6 +165,10 @@
       if (!activeDraft) return;
       dialog.ondrop = e => { e.preventDefault(); e.stopPropagation(); };
       const d = activeDraft;
+      const single = d.rows.length === 1 && !!(d.editId || d.manual); // one course typed by hand gets a plain form, not the review table
+      let singleForm = null;
+      const noted = (d.reports || []).some(r => !r.ok || r.warnings.length);
+      const ackRow = h('label', { class: 'tt-ack' });
       const summary = h('div', { class: 'tt-preview-summary', role: 'status' }), tableBody = h('tbody');
       const issues = [], feedback = h('div', { class: 'tt-error', role: 'alert' });
       const acknowledge = h('input', { type: 'checkbox', 'aria-label': '确认识别提示与时间冲突', onchange: update });
@@ -173,8 +182,10 @@
           issues[i].textContent = record.errors.length ? record.errors.join('；') : record.occurrences + ' 次课 · ' + record.value.startTime + '–' + record.value.endTime;
           issues[i].className = 'tt-row-status ' + (record.errors.length ? 'tt-error' : '');
         });
+        ackRow.hidden = !(p.conflicts.length || noted);
+        if (single && !d.editId) summary.replaceChildren(h('strong', {}, p.added.length ? '会排进 ' + p.added.length + ' 次课' : '填好后会显示能排进几次课'), h('span', {}, p.conflicts.length ? ' · ' + p.conflicts.length + ' 处时间冲突' : ''));
         accept.disabled = !!p.errors || !d.rows.some(r => r.selected !== false) || (!p.added.length && !d.editId);
-        accept.textContent = d.editId ? '保存课程修改' : '确认导入 ' + p.added.length + ' 次课';
+        accept.textContent = d.editId ? '保存课程修改' : single ? '添加课程' : '确认导入 ' + p.added.length + ' 次课';
         const conflicts = p.conflicts.slice(0, 8).map(x => x.a.date + ' ' + x.a.startTime + ' ' + x.a.title + ' ↔ ' + x.b.title);
         feedback.replaceChildren(...conflicts.map(x => h('p', {}, x)), ...(p.conflicts.length > 8 ? [h('p', {}, '另有 ' + (p.conflicts.length - 8) + ' 处冲突')] : []));
       }
@@ -183,6 +194,16 @@
         const error = h('p', { class: 'tt-row-status' }); issues.push(error);
         const choose = h('input', { type: 'checkbox', checked: row.selected !== false, 'aria-label': '导入第' + (i + 1) + '条课程', onchange: e => { row.selected = e.target.checked; update(); } });
         const days = h('select', { 'aria-label': 'weekday', onchange: e => { row.weekday = e.target.value; update(); } }, h('option', { value: '' }, '未明确'), ...T.weekdayNames.map((name, n) => h('option', { value: n + 1, selected: +row.weekday === n + 1 }, name)));
+        if (single) {
+          singleForm = h('div', { class: 'tt-form' },
+            field('课程名称', input(row, 'title', 'text', '例如 自动控制原理')),
+            h('div', { class: 'row' }, field('星期', days), field('周次', input(row, 'weeks', 'text', '如 1-16、1-16单、1-8,10-16'))),
+            h('div', { class: 'row' }, field('节次（套用学校节次时间）', input(row, 'periods', 'text', '如 1-2')), field('或者直接填开始', input(row, 'startTime', 'time')), field('结束', input(row, 'endTime', 'time'))),
+            h('div', { class: 'row' }, field('教室（可以不填）', input(row, 'room', 'text', '')), field('教师（可以不填）', input(row, 'teacher', 'text', ''))),
+            h('details', {}, h('summary', {}, '只上一次的课：改填具体日期'), field('具体日期（填了就不看星期和周次）', input(row, 'date', 'date'))),
+            row.evidence ? h('details', {}, h('summary', {}, '识别依据'), h('pre', {}, row.evidence)) : null, error);
+          return;
+        }
         tableBody.append(h('tr', {}, h('td', {}, choose),
           h('td', {}, input(row, 'title', 'text', '课程名称'), h('small', {}, row.source || '手动填写'), row.evidence ? h('details', {}, h('summary', {}, row.method === 'model' ? '模型识别依据' : '规则识别依据'), h('pre', {}, row.evidence)) : null, error),
           h('td', {}, days, input(row, 'date', 'date'), h('small', {}, '有具体日期时按日期排课')),
@@ -192,20 +213,21 @@
           h('td', {}, input(row, 'room', 'text', '教室'), input(row, 'teacher', 'text', '教师'))));
       });
       const report = h('div', { class: 'tt-reports' }, ...(d.reports || []).map(r => h('div', { class: r.ok ? '' : 'tt-error' }, h('strong', {}, r.file + '：'), r.message, ...r.warnings.map(w => h('p', { class: 'tt-warning' }, w)))));
-      dialog.replaceChildren(h('div', { class: 'tt-dialog-head' }, h('h2', {}, d.editId ? '编辑课程规则' : '检查课表后导入'), btn('关闭', () => dialog.close(), 'ghost')),
+      dialog.replaceChildren(h('div', { class: 'tt-dialog-head' }, h('h2', {}, d.editId ? '编辑课程规则' : single ? '手动添加一门课' : '检查课表后导入'), btn('关闭', () => dialog.close(), 'ghost')),
         h('div', { class: 'tt-dialog-body' }, report, summary,
-          h('div', { class: 'tt-actions' }, btn('学期与节次设置', () => settings(update)), !d.editId ? btn('缺失周次设为整个学期', () => {
+          h('div', { class: 'tt-actions' }, btn('学期与节次设置', () => settings(update)), !d.editId && !single ? btn('缺失周次设为整个学期', () => {
             const n = schedule().settings.weekCount; if (!n) return toast('请先设置学期周数');
             if (confirm('把未填写周次且没有具体日期的课程设为第 1–' + n + ' 周，每周上课？')) { for (const row of d.rows) if (!row.weeks && !row.date) row.weeks = '1-' + n; showPreview(); }
-          }, 'ghost') : null, !d.editId ? btn('增加一行', () => { d.rows.push({ title: '', selected: true }); showPreview(); }, 'ghost') : null),
-          h('div', { class: 'tt-preview-table' }, h('table', {}, h('thead', {}, h('tr', {}, ...['选中', '课程及核对结果', '星期 / 具体日期', '周次', '节次', '开始 / 结束', '教室 / 教师'].map(x => h('th', {}, x)))), tableBody)),
-          h('p', { class: 'sub' }, '具体日期优先于周次；原表写明的钟点优先于节次。空白字段不会被猜测。可取消勾选暂不导入的课程。'), feedback,
-          h('label', { class: 'tt-ack' }, acknowledge, '我已核对识别提示，允许保留时间冲突，或仅导入本次成功识别的文件')),
-        h('div', { class: 'tt-dialog-foot' }, !d.editId ? btn('重新选文件', () => openImport(), 'ghost') : null, accept));
+          }, 'ghost') : null, !d.editId ? btn(single ? '一次添加多门课' : '增加一行', () => { d.rows.push({ title: '', selected: true }); showPreview(); }, 'ghost') : null),
+          single ? singleForm : h('div', { class: 'tt-preview-table' }, h('table', {}, h('thead', {}, h('tr', {}, ...['选中', '课程及核对结果', '星期 / 具体日期', '周次', '节次', '开始 / 结束', '教室 / 教师'].map(x => h('th', {}, x)))), tableBody)),
+          single ? null : h('p', { class: 'sub' }, '具体日期优先于周次；原表写明的钟点优先于节次。空白字段不会被猜测。可取消勾选暂不导入的课程。'), feedback,
+          ackRow),
+        h('div', { class: 'tt-dialog-foot' }, !d.editId && !single ? btn('重新选文件', () => openImport(), 'ghost') : null, accept));
+      ackRow.append(acknowledge, noted ? '我已核对识别提示，允许保留时间冲突，或仅导入本次成功识别的文件' : '我知道这门课和已有安排时间重叠，仍然保留');
       function finalize() {
         try {
           const p = T.preview(baseSchedule(), d.rows);
-          if ((p.conflicts.length || (d.reports || []).some(r => !r.ok || r.warnings.length)) && !acknowledge.checked) throw new Error('请先核对识别提示 / 冲突 / 未识别文件，并勾选下方确认项');
+          if ((p.conflicts.length || noted) && !acknowledge.checked) throw new Error(noted ? '请先核对识别提示 / 冲突 / 未识别文件，并勾选下方确认项' : '时间有冲突：请修改，或勾选下方确认项后保留');
           let next;
           if (d.editId) {
             if (p.errors) throw new Error('请先修正课程信息');

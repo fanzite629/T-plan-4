@@ -47,7 +47,7 @@ exports and the planning assistant receives confirmed course times for the next 
 | Providers | Presets for DeepSeek, OpenAI, Anthropic, Doubao (Volcengine Ark) and Kimi (Moonshot). Paste a key to load the model list, pick a model, and run a connection test that also checks whether the model reads images |
 | Pictures | Dropped or pasted images are scaled down and sent to models that accept image input |
 | Reflections | The assistant transcribes a photographed note into a reflection you can correct before saving |
-| Agent loop | The model answers in JSON: either one read-only tool call (`read_attachment`, `read_path`, `list_dir`, `get_history`) or a final answer. Up to 6 tool calls per turn |
+| Agent loop | The model answers in JSON: either one read-only tool call (`read_attachment`, `get_history`) or a final answer. Up to 6 tool calls per turn |
 | Proposal | Tasks with timed steps, goals with weekly milestones, habits. Nothing is written until confirmed |
 | Timer | Walks a task's steps one by one, in the page or in a floating always-on-top window |
 | Sessions | Each finished step records planned and actual minutes. Steps skipped within a minute record nothing |

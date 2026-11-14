@@ -17,7 +17,7 @@
     const key = platform.loadKey(state.settings.agent.provider, state.settings.agent.provider);
     if (key) platform.saveKey(state.settings.agent.provider, key, state.settings.agent.provider);
   } catch { /* keys stay as they were */ }
-  const ui = { panelSection: 'review', mode: 'planner', space: null, tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0 };
+  const ui = { panelSection: 'review', mode: 'planner', space: null, tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0, search: '', abort: null };
   const library = new Map(); // files read during this session, by name; kept out of saved state because they are large
   let pip = null; // floating timer window, when open
   let dueNotified = null;
@@ -89,6 +89,9 @@
     up: 'M6 14l6-6 6 6',
     shrink: 'M5 19h14',
     grow: 'M8 4H4v4M16 20h4v-4M4 4l6 6M20 20l-6-6',
+    stop: 'M7 7h10v10H7z',
+    search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm5-2 4 4',
+    edit: 'M4 20h4L19 9l-4-4L4 16v4Zm10-14 4 4',
   };
   function icon(name) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -101,12 +104,30 @@
     return svg;
   }
   let toastTimer;
-  function toast(text) {
+  function hideToast() {
     const el = $('#toast');
-    el.textContent = text;
+    try { if (el.matches(':popover-open')) el.hidePopover(); } catch { /* not a popover here */ }
+    el.hidden = true;
+  }
+  function toast(text, action) {
+    const el = $('#toast');
+    el.replaceChildren(h('span', {}, text), ...(action ? [h('button', { class: 'toast-action', onclick: () => { hideToast(); action.run(); } }, action.label)] : []));
     el.hidden = false;
+    // Shown again as a popover so it sits above any open dialog instead of behind its backdrop.
+    try { el.popover = 'manual'; if (el.matches(':popover-open')) el.hidePopover(); el.showPopover(); } catch { /* older engines keep the plain fixed toast */ }
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
+    toastTimer = setTimeout(hideToast, action ? 9000 : 3200);
+  }
+  /* Runs a change and offers to take it back. The offer only holds while nothing else has changed since. */
+  function undoable(label, apply) {
+    const before = state;
+    if (!apply()) return false;
+    const after = state;
+    toast(label, { label: '撤销', run: () => {
+      if (state !== after) return toast('之后又有新的修改，不能撤销了');
+      if (commit(before)) toast('已撤销');
+    } });
+    return true;
   }
 
   /* ---------- formatting ---------- */
@@ -224,7 +245,7 @@
       s.settings.prefs[ONBOARDING[option.pref.index].key] = option.pref.value;
       if (option.pref.index + 1 < ONBOARDING.length) return askOnboarding(s, option.pref.index + 1);
       s.settings.prefs.onboarded = true;
-      say(s, '好了，我记住了。以后我会根据你真实的计时记录慢慢调整安排。\n\n现在你可以把课件（PDF、PPT、Word、Excel）或代码文件拖进聊天框，告诉我你有多少时间，我来拆成一段一段并帮你计时。也可以直接点下面的选项。', { options: STARTERS.map((label) => ({ label })) });
+      say(s, '好了，我记住了。以后我会根据你真实的计时记录慢慢调整安排。\n\n现在你可以把课件（PDF、PPT、Word、Excel）或代码文件拖进聊天框，告诉我你有多少时间，我来拆成一段一段并帮你计时。也可以直接点下面的选项。\n\n两件事会让我有用得多：导入课表（我安排时会避开上课时间），以及连接一个 AI 模型（没有模型时我只能把每一行变成任务）。', { options: [...STARTERS.map((label) => ({ label })), { label: '导入课表', go: 'timetable' }, { label: '连接 AI 模型', go: 'model' }] });
     });
   }
 
@@ -237,6 +258,7 @@
     $('#rail').replaceChildren(
       item(null, '全部', 'var(--ink)', '全'),
       h('button', { class: 'rail-item' + (ui.mode === 'timetable' ? ' active' : ''), title: '课表', 'aria-label': '课表', onclick: () => { ui.mode = 'timetable'; render(); } }, h('span', { class: 'avatar', style: 'background:#567897' }, '课'), h('span', { class: 'rail-label' }, '课表')),
+      h('button', { class: 'rail-item', title: '回看：每周的专注时间、完成情况和反思', 'aria-label': '回看', onclick: () => openSettings('review') }, h('span', { class: 'avatar', style: 'background:#7a8496' }, icon('bars')), h('span', { class: 'rail-label' }, '回看')),
       h('div', { class: 'rail-rule' }),
       ...state.spaces.map((s) => item(s.id, s.name, s.color, s.name.slice(0, 1))),
       h('button', { class: 'rail-item', onclick: () => openSpaceDialog(null) },
@@ -257,7 +279,26 @@
         if (tab === 'week') return x.date && x.date > t && x.date <= weekEnd;
         return !x.date || x.date > weekEnd;
       })
-      .sort((a, b) => a.done - b.done || (a.date || '9999').localeCompare(b.date || '9999') || a.createdAt - b.createdAt);
+      .sort(byWhen);
+  }
+  const byWhen = (a, b) => a.done - b.done || (a.date || '9999').localeCompare(b.date || '9999') || (a.time || '99:99').localeCompare(b.time || '99:99') || a.createdAt - b.createdAt;
+  const whenLabel = (t) => dateLabel(t.date) + (t.time ? ' ' + t.time : '');
+  /* After a task is finished with its timer, one click of feedback goes into the profile. */
+  function askFeel(s, task) {
+    const actual = s.sessions.filter((x) => x.taskId === task.id).reduce((n, x) => n + x.actual, 0);
+    say(s, '完成了「' + task.title + '」。' + (actual ? '实际用时 ' + minutesLabel(actual) + '，计划 ' + minutesLabel(task.minutes) + '。' : '') + '\n感觉怎么样？点一下，我下次会安排得更合适。', {
+      options: [['太简单', 'easy'], ['正好', 'ok'], ['太难', 'hard']].map(([label, value]) => ({ label, feel: { taskId: task.id, value } })),
+    });
+  }
+  function toggleDone(taskId) {
+    try {
+      const result = C.toggleTask(state, taskId, Date.now());
+      if (result.wasTiming) {
+        askFeel(result.state, result.state.tasks.find((t) => t.id === taskId));
+        if (pip) pip.close();
+      }
+      commit(result.state);
+    } catch (error) { toast(error.message); }
   }
   const stepLines = (steps) => h('ol', { class: 'steps' }, steps.map((x, i) => h('li', { class: x.done ? 'done' : '' },
     h('span', { class: 'num' }, i + 1 + '.'), h('span', { class: 'step-title' }, x.title), h('span', { class: 'sub' }, x.minutes + ' 分'))));
@@ -269,13 +310,13 @@
     const row = h('div', { class: 'task' + (t.done ? ' done' : '') + (timing ? ' timing' : '') },
       h('button', {
         class: 'check', 'aria-label': t.done ? '标记为未完成' : '标记为完成', 'aria-pressed': String(t.done),
-        onclick: () => change((s) => { const x = s.tasks.find((y) => y.id === t.id); x.done = !x.done; x.doneAt = x.done ? Date.now() : null; if (x.done && s.timer && s.timer.taskId === x.id) s.timer = null; }),
+        onclick: () => toggleDone(t.id),
       }, t.done ? icon('check') : null),
       h('button', { class: 'task-body', onclick: () => openTaskDialog(t) },
         h('span', { class: 'task-title' }, t.title),
         h('span', { class: 'task-meta' },
           sp ? h('span', { class: 'dot', style: 'background:' + sp.color }) : null,
-          h('span', { class: overdue ? 'overdue' : '' }, overdue ? '已过期 · ' + dateLabel(t.date) : dateLabel(t.date)),
+          h('span', { class: overdue ? 'overdue' : '' }, overdue ? '已过期 · ' + whenLabel(t) : whenLabel(t)),
           h('span', {}, '· ' + minutesLabel(t.minutes)),
           t.steps ? h('span', {}, '· ' + stepsDone + '/' + t.steps.length + ' 段') : null)),
       !t.done && !state.timer ? h('button', { class: 'play', 'aria-label': '开始计时：' + t.title, title: '开始计时', onclick: () => beginTimer(t.id) }, icon('play')) : null);
@@ -311,7 +352,7 @@
       h('div', { class: 'goal-head' },
         h('strong', {}, goal.title),
         h('button', { class: 'icon-btn small', 'aria-label': '删除目标', title: '删除目标', onclick: () => {
-          if (confirm('删除目标「' + goal.title + '」？它的任务会保留。')) commit(C.normalize({ ...C.clone(state), goals: state.goals.filter((g) => g.id !== goal.id) }));
+          if (confirm('删除目标「' + goal.title + '」？它的任务会保留。')) undoable('目标已删除', () => commit(C.normalize({ ...C.clone(state), goals: state.goals.filter((g) => g.id !== goal.id) })));
         } }, icon('trash'))),
       h('span', { class: 'task-meta' }, (goal.deadline ? '截止 ' + plainDate(goal.deadline) + ' · ' : '') + done + ' / ' + tasks.length + ' 项完成'));
     fill(card, goal.id, tasks.length ? done / tasks.length : 0, (space(goal.spaceId) || {}).color);
@@ -328,7 +369,10 @@
     const sessions = state.sessions.filter((x) => inSpace(x));
     const minutes = (list) => list.reduce((n, x) => n + x.actual, 0);
     const habits = state.habits.filter(inSpace);
+    const budget = ui.space ? null : state.settings.prefs.dailyMinutes || null; // the daily budget is for everything, not one space
+    const planned = dated.reduce((a, x) => a + x.minutes, 0);
     return {
+      planned, budget, over: budget && planned > budget ? planned - budget : 0,
       done: state.tasks.filter((x) => inSpace(x) && x.done && x.doneAt && C.todayISO(new Date(x.doneAt)) === t).length,
       focus: minutes(sessions.filter((x) => x.date === t)),
       rate: dated.length ? Math.round((dated.filter((x) => x.done).length / dated.length) * 100) : null,
@@ -343,11 +387,11 @@
     const short = (m) => (m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : m + 'm');
     const cell = (value, label) => h('div', { class: 'sum-cell' }, h('strong', {}, value), h('span', { class: 'sub' }, label));
     const capsule = h('button', { class: 'capsule', 'aria-expanded': String(summaryOpen), title: '点一下或往下拉，展开今天的统计' },
-      h('span', {}, icon('check'), n.done + ' 完成'), h('span', {}, icon('brain'), short(n.focus)), h('span', {}, n.rate === null ? '今天无安排' : n.rate + '%'));
+      h('span', {}, icon('check'), n.done + ' 完成'), h('span', {}, icon('brain'), short(n.focus)), n.over ? h('span', { class: 'over' }, '超出 ' + short(n.over)) : h('span', {}, n.rate === null ? '今天无安排' : n.rate + '%'));
     const panel = h('div', { class: 'sum-panel' }, h('div', { class: 'sum-grid' },
       cell(String(n.left.length), '今天还剩（项）'), cell(minutesLabel(n.left.reduce((a, x) => a + x.minutes, 0)), '还需要的时间'),
       cell(minutesLabel(n.weekFocus), '本周专注'), cell(n.habits ? n.habitsDone + ' / ' + n.habits : '—', '今天的习惯'),
-      cell(String(n.overdue), '已过期（项）'), cell(n.rate === null ? '—' : n.rate + '%', '今天完成率')));
+      cell(String(n.overdue), '已过期（项）'), cell(minutesLabel(n.planned) + (n.budget ? ' / ' + minutesLabel(n.budget) : ''), n.over ? '今天已安排，超出每天可安排的 ' + minutesLabel(n.over) : n.budget ? '今天已安排 / 每天可安排' : '今天已安排')));
     const box = h('div', { class: 'summary' + (summaryOpen ? ' open' : ''), style: '--open:' + (summaryOpen ? 1 : 0) }, capsule, panel);
     const set = (value, dragging) => {
       box.style.setProperty('--open', String(value));
@@ -444,7 +488,7 @@
           h('strong', { class: 'metric-value' }, latest ? latest.value + unit : '还没有记录')),
         line,
         h('button', { class: 'icon-btn small', 'aria-label': '删除记录项 ' + metric.name, title: '删除这个记录项', onclick: () => {
-          if (confirm('删除「' + metric.name + '」和它的全部 ' + entries.length + ' 条记录？')) change((s) => { s.metrics = s.metrics.filter((m) => m.id !== metric.id); });
+          if (confirm('删除「' + metric.name + '」和它的全部 ' + entries.length + ' 条记录？')) undoable('记录项已删除', () => change((s) => { s.metrics = s.metrics.filter((m) => m.id !== metric.id); }));
         } }, icon('trash'))),
       delta !== null ? h('span', { class: 'sub' }, '从 ' + plainDate(entries[0].date) + ' 的 ' + entries[0].value + unit + ' 到现在：' + (delta > 0 ? '+' : '') + delta + unit + '，共 ' + entries.length + ' 次记录') : null,
       h('div', { class: 'row tight' }, input, h('button', { class: 'btn outline slim', onclick: log }, '记录')));
@@ -467,9 +511,9 @@
 
   /* What each kind of space shows, and in which order. "all" is the overview across spaces. */
   const TABS = {
-    all: [['today', '今天'], ['week', '本周'], ['later', '之后'], ['goals', '目标']],
-    study: [['today', '今天'], ['week', '本周'], ['later', '之后'], ['goals', '目标']],
-    project: [['goals', '目标'], ['today', '今天'], ['week', '本周'], ['later', '之后']],
+    all: [['today', '今天'], ['week', '本周'], ['later', '之后'], ['goals', '目标'], ['done', '完成']],
+    study: [['today', '今天'], ['week', '本周'], ['later', '之后'], ['goals', '目标'], ['done', '完成']],
+    project: [['goals', '目标'], ['today', '今天'], ['week', '本周'], ['later', '之后'], ['done', '完成']],
     habit: [['checkin', '打卡'], ['today', '任务'], ['goals', '目标']],
     life: [['todo', '待办'], ['done', '已完成']],
   };
@@ -485,7 +529,11 @@
     const button = (cls, label, onclick) => h('button', { class: 'btn ' + cls, onclick }, icon('plus'), label);
     const emptyText = { today: '今天还没有安排。告诉助手你想做什么，或者拖一份课件进来。', week: '本周后面几天还没有安排。', later: '没有以后的任务或未定日期的任务。', todo: '没有待办的事。在上面写一件，按回车就加进来。', done: '还没有完成的事。' };
     let body;
-    if (tab === 'goals') {
+    const query = ui.search.trim().toLowerCase();
+    if (query) {
+      const found = state.tasks.filter((x) => inSpace(x) && x.title.toLowerCase().includes(query)).sort(byWhen).slice(0, 80);
+      body = [h('h3', { class: 'group-title' }, '搜索到 ' + found.length + ' 项' + (current ? '（只在这个分区里）' : '')), found.length ? found.map(taskRow) : h('p', { class: 'empty' }, '没有标题里包含「' + ui.search.trim() + '」的任务。')];
+    } else if (tab === 'goals') {
       body = goals.length ? goals.map((g) => goalCard(g, type === 'project'))
         : h('p', { class: 'empty' }, type === 'project' ? '这个项目还没有目标。在聊天里说说这个项目要做成什么、什么时候要，助手会拆成阶段和任务。' : '还没有目标。在聊天里说「我想在 12 月底前学完单片机」，助手会拆成每周和每天的任务。');
     } else if (tab === 'checkin') {
@@ -518,16 +566,26 @@
         h('h2', {}, current ? current.name : '全部安排'),
         current ? h('button', { class: 'icon-btn', 'aria-label': '编辑分区', title: '编辑分区', onclick: () => openSpaceDialog(current) }, icon('gear')) : null),
       summary(todayNumbers(inSpace)),
-      h('div', { class: 'segmented', role: 'tablist' }, tabs.map(([key, label]) =>
+      h('label', { class: 'list-search' }, icon('search'), h('input', { type: 'search', value: ui.search, placeholder: '搜索任务（包括已完成的）', 'aria-label': '搜索任务', maxLength: 60,
+        // The list is rebuilt on every keystroke, so focus is put back; an input method's unfinished text is left alone.
+        oninput: (e) => { if (e.isComposing) return; searchFor(e.target.value); }, oncompositionend: (e) => searchFor(e.target.value) })),
+      query ? null : h('div', { class: 'segmented', role: 'tablist' }, tabs.map(([key, label]) =>
         h('button', { role: 'tab', 'aria-selected': String(tab === key), class: tab === key ? 'on' : '', onclick: () => { ui.tabs[type] = key; render(); } }, label))),
       h('div', { class: 'list-scroll' }, body),
       h('div', { class: 'list-foot' }, foot));
   }
 
+  function searchFor(value) {
+    ui.search = value;
+    renderList();
+    const box = $('.list-search input');
+    if (box) { box.focus(); box.setSelectionRange(value.length, value.length); }
+  }
+
   /* ---------- chat ---------- */
   function taskSummary(a) {
     const sp = a.spaceId ? ' · ' + (space(a.spaceId) || {}).name : '';
-    return dateLabel(a.date) + ' · ' + minutesLabel(a.minutes) + sp;
+    return whenLabel(a) + ' · ' + minutesLabel(a.minutes) + sp;
   }
   const stepList = (steps) => h('ol', { class: 'steps' }, steps.map((s, i) => h('li', {}, h('span', { class: 'num' }, i + 1 + '.'), h('span', { class: 'step-title' }, s.title), h('span', { class: 'sub' }, s.minutes + ' 分钟'))));
   /* The same list with controls: rename, change minutes, reorder, remove, add. */
@@ -564,6 +622,7 @@
       const parts = [];
       if (a.title !== undefined) parts.push('改名为「' + a.title + '」');
       if (a.date !== undefined) parts.push('改到 ' + dateLabel(a.date));
+      if (a.time !== undefined) parts.push(a.time ? '开始时间 ' + a.time : '去掉开始时间');
       if (a.minutes !== undefined) parts.push('时长 ' + minutesLabel(a.minutes));
       return line('修改', name(a.taskId), parts.join(' · '));
     }
@@ -597,7 +656,8 @@
           const first = created.find((t) => t.steps) || created[0];
           if (first) { next = C.startTimer(next, first.id, Date.now()); openFloating(); }
         }
-        if (commit(next) && accept) toast(withTimer ? '已写入，计时开始' : '已写入');
+        if (!accept || withTimer) { if (commit(next) && accept) toast('已写入，计时开始'); }
+        else undoable('已写入', () => commit(next));
       } catch (error) { toast(error.message); }
     };
     return h('div', { class: 'proposal ' + p.status },
@@ -611,6 +671,8 @@
   function chooseOption(option) {
     if (ui.busy) return;
     if (option.pref) return answerOnboarding(option);
+    if (option.go === 'timetable') { ui.mode = 'timetable'; return render(); }
+    if (option.go === 'model') return openSettings('model');
     if (option.feel) {
       return change((s) => {
         const task = s.tasks.find((t) => t.id === option.feel.taskId);
@@ -701,7 +763,8 @@
         h('div', { class: 'composer-bar' },
           h('button', { class: 'icon-btn small', 'aria-label': '添加文件', title: '添加课件、图片或代码文件', onclick: () => picker.click() }, icon('clip')), picker,
           h('span', { class: 'sub grow' }, here ? '新建的任务和目标会放进「' + here.name + '」' : '助手只会提议，你确认后才写入'),
-          h('button', { class: 'send', id: 'send', 'aria-label': '发送', onclick: () => send() }, icon('send')))),
+          ui.busy && ui.abort ? h('button', { class: 'send stop', 'aria-label': '停止回答', title: '停止回答', onclick: () => ui.abort.abort() }, icon('stop'))
+            : h('button', { class: 'send', id: 'send', 'aria-label': '发送', onclick: () => send() }, icon('send')))),
       h('div', { class: 'drop-hint' }, icon('file'), '松开，把文件交给助手'));
     updateSend();
     scroller.scrollTop = previous && chatKey === lastChatKey ? offset : scroller.scrollHeight;
@@ -718,6 +781,10 @@
     if (ui.mode === 'timetable') { timetable.openImport(fileList); return; }
     const files = [...fileList].slice(0, 6);
     if (!files.length) return;
+    if (files.some((f) => /课表|课程表|timetable|schedule/i.test(f.name))) toast('这像是课表。聊天里只会当作资料读，不会排进日程', { label: '去课表导入', run: () => {
+      ui.attachments = ui.attachments.filter((x) => !files.some((f) => f.name === x.name));
+      ui.mode = 'timetable'; render(); timetable.openImport(files);
+    } });
     ui.parsing += files.length;
     render();
     for (const file of files) {
@@ -737,8 +804,6 @@
 
   const TOOL_LABELS = {
     read_attachment: (a) => '正在读取 ' + (a.name || '附件') + '…',
-    read_path: (a) => '正在读取 ' + String(a.path || '文件').split(/[\\/]/).pop() + '…',
-    list_dir: () => '正在查看文件夹…',
     get_history: () => '正在查看你的记录…',
   };
   async function send(preset) {
@@ -761,6 +826,9 @@
     const useModel = !!modelName();
     let answer;
     let error = null;
+    let stopped = false;
+    const control = useModel ? new AbortController() : null;
+    ui.abort = control;
     ui.busy = true;
     ui.busyText = '';
     render();
@@ -768,10 +836,9 @@
       if (useModel) {
         answer = await Agent.run({
           context, attachments, library,
-          chat: (system, user, images) => platform.chat(state.settings.agent, system, user, images),
+          signal: control.signal,
+          chat: (system, user, images) => platform.chat(state.settings.agent, system, user, images, undefined, control.signal),
           tools: {
-            read_path: async (a) => { const body = await platform.readPath(String(a.path)); return { path: a.path, totalChars: body.length, text: body.slice(0, 8000) }; },
-            list_dir: async (a) => ({ path: a.path, entries: await platform.listDir(String(a.path)) }),
             get_history: (a) => C.history(state, today(), a.days),
           },
           onStep: (name, args) => { ui.busyText = (TOOL_LABELS[name] || (() => '正在查资料…'))(args); render(); },
@@ -780,11 +847,13 @@
         answer = C.localReply(text, today(), state.settings.prefs);
       }
     } catch (e) {
-      error = e.message;
+      if (e.name === 'AbortError') stopped = true; else error = e.message;
     }
     ui.busy = false;
+    ui.abort = null;
     change((s) => {
       const now = Date.now();
+      if (stopped) { s.messages.push({ id: C.uid('msg'), role: 'assistant', at: now, source: 'local', spaceId: threadSpace, text: '已停止这次回答，没有写入任何内容。' }); return; }
       const message = { id: C.uid('msg'), role: 'assistant', at: now, source: useModel ? 'ai' : 'local', spaceId: threadSpace, text: error || answer.reply };
       if (error) { message.error = true; s.messages.push(message); return; }
       // Inside a space, everything new goes to that space; the model's own choice only counts in the general chat.
@@ -842,11 +911,7 @@
   function finishCurrentStep() {
     const result = C.finishStep(state, Date.now());
     if (result.finishedTask) {
-      const task = result.state.tasks.find((t) => t.id === result.finishedTask);
-      const actual = result.state.sessions.filter((x) => x.taskId === task.id).reduce((n, x) => n + x.actual, 0);
-      say(result.state, '完成了「' + task.title + '」。' + (actual ? '实际用时 ' + minutesLabel(actual) + '，计划 ' + minutesLabel(task.minutes) + '。' : '') + '\n感觉怎么样？点一下，我下次会安排得更合适。', {
-        options: [['太简单', 'easy'], ['正好', 'ok'], ['太难', 'hard']].map(([label, value]) => ({ label, feel: { taskId: task.id, value } })),
-      });
+      askFeel(result.state, result.state.tasks.find((t) => t.id === result.finishedTask));
       if (pip) pip.close();
     }
     commit(result.state);
@@ -914,6 +979,31 @@
     }
   }
   setInterval(() => { if (state.timer) tick(); else if (document.title !== 'T计划') document.title = 'T计划'; }, 500);
+
+  /* Reminders: a class or a task with a start time is announced once, a few minutes ahead.
+     Always shown in the window with a sound; also as a system notification where that is allowed. */
+  const reminded = new Set();
+  const canNotify = () => typeof Notification === 'function';
+  function checkReminders() {
+    const lead = Number(state.settings.prefs.remindMinutes) || 0;
+    if (!lead) return;
+    const now = new Date();
+    const t = today();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const toMinutes = (clockTime) => Number(clockTime.slice(0, 2)) * 60 + Number(clockTime.slice(3));
+    const due = [
+      ...window.TPlanTimetable.events(state.schedule, t, t).map((e) => ({ key: 'c:' + e.courseId + ':' + t + ':' + e.startTime, start: e.startTime, text: '上课：' + e.title + (e.room ? '（' + e.room + '）' : '') })),
+      ...state.tasks.filter((x) => !x.done && x.date === t && x.time && !(state.timer && state.timer.taskId === x.id)).map((x) => ({ key: 't:' + x.id + ':' + t + ':' + x.time, start: x.time, text: x.title })),
+    ].filter((item) => { const ahead = toMinutes(item.start) - nowMinutes; return ahead >= 0 && ahead <= lead && !reminded.has(item.key); });
+    if (!due.length) return;
+    for (const item of due) reminded.add(item.key);
+    const text = due.map((item) => item.start + ' ' + item.text).join('；');
+    beep();
+    toast('快到时间了：' + text);
+    try { if (canNotify() && Notification.permission === 'granted') new Notification('T计划 · 快到时间了', { body: text }); } catch { /* the in-window reminder was already shown */ }
+  }
+  setInterval(checkReminders, 30000);
+  setTimeout(checkReminders, 1500);
   if (platform.onTimerCommand) platform.onTimerCommand((command) => {
     if (!state.timer) return;
     if (command === 'pause') commit(C.pauseTimer(state, Date.now()));
@@ -977,9 +1067,13 @@
     });
     return box;
   }
+  let reviewOffset = 0; // 0 is this week, -1 the week before, and so on
   function reviewContent() {
     const t = today();
-    const start = C.weekStart(t);
+    const start = C.addDays(C.weekStart(t), reviewOffset * 7);
+    const wk = reviewOffset ? '这一周' : '本周';
+    const go = (n) => { reviewOffset = n; reviewDay = null; openSettings('review'); };
+    const earliest = [...state.sessions.map((x) => x.date), ...state.tasks.map((x) => x.date || C.todayISO(new Date(x.createdAt || Date.now())))].sort()[0] || t;
     const days = Array.from({ length: 7 }, (_, i) => C.addDays(start, i));
     const sessions = state.sessions.filter((x) => x.date >= start && x.date <= days[6]);
     const perDay = days.map((d) => sessions.filter((x) => x.date === d).reduce((n, x) => n + x.actual, 0));
@@ -988,11 +1082,16 @@
     const planned = state.tasks.filter((x) => x.date && x.date >= start && x.date <= days[6]);
     const stat = (value, label) => h('div', { class: 'stat' }, h('strong', {}, value), h('span', { class: 'sub' }, label));
     return h('div', { class: 'review-body' },
-        h('p', { class: 'sub' }, plainDate(days[0]) + ' 至 ' + plainDate(days[6]) + ' · 只显示已记录的事实'),
+        h('div', { class: 'week-nav' },
+          h('button', { type: 'button', class: 'btn ghost', disabled: start <= earliest, onclick: () => go(reviewOffset - 1) }, '‹ 上一周'),
+          h('strong', {}, plainDate(days[0]) + ' 至 ' + plainDate(days[6]) + (reviewOffset ? '' : '（本周）')),
+          h('button', { type: 'button', class: 'btn ghost', disabled: reviewOffset >= 0, onclick: () => go(reviewOffset + 1) }, '下一周 ›'),
+          reviewOffset ? h('button', { type: 'button', class: 'btn ghost', onclick: () => go(0) }, '回到本周') : null),
+        h('p', { class: 'sub' }, '只显示已记录的事实'),
         h('div', { class: 'stats' },
-          stat(minutesLabel(perDay.reduce((a, b) => a + b, 0)), '本周计时的专注时间'),
+          stat(minutesLabel(perDay.reduce((a, b) => a + b, 0)), wk + '计时的专注时间'),
           stat(String(sessions.length), '完成的计时段数'),
-          stat(planned.filter((x) => x.done).length + ' / ' + planned.length, '本周安排的完成情况')),
+          stat(planned.filter((x) => x.done).length + ' / ' + planned.length, wk + '安排的完成情况')),
         h('section', { class: 'card' }, h('h3', {}, '助手对你的了解'),
           h('ul', { class: 'plain' }, profileLines().map((line) => h('li', {}, line))),
           h('div', { class: 'row' }, h('button', { class: 'pill soft', onclick: () => openSettings('memory') }, icon('note'), '查看和修改长期记忆（' + state.memory.length + ' 条）'))),
@@ -1010,9 +1109,9 @@
           state.habits.length ? h('div', { class: 'habit-grid' }, state.habits.map((habit) => h('div', { class: 'habit-line' },
             h('span', { class: 'task-title' }, habit.title),
             h('span', { class: 'cells' }, days.map((d) => h('span', { class: 'cell' + (habit.log[d] ? ' on' : ''), title: dateLabel(d) }))),
-            h('span', { class: 'sub' }, C.habitWeekCount(habit, t) + ' / ' + habit.perWeek)))) : h('p', { class: 'empty' }, '还没有习惯。')),
-        h('section', { class: 'card' }, h('h3', {}, '本周完成'),
-          doneWeek.length ? h('ul', { class: 'plain' }, doneWeek.map((x) => h('li', {}, x.title, h('span', { class: 'sub' }, ' · ' + minutesLabel(x.minutes))))) : h('p', { class: 'empty' }, '本周还没有完成的任务。')));
+            h('span', { class: 'sub' }, C.habitWeekCount(habit, days[0]) + ' / ' + habit.perWeek)))) : h('p', { class: 'empty' }, '还没有习惯。')),
+        h('section', { class: 'card' }, h('h3', {}, wk + '完成'),
+          doneWeek.length ? h('ul', { class: 'plain' }, doneWeek.map((x) => h('li', {}, x.title, h('span', { class: 'sub' }, ' · ' + minutesLabel(x.minutes))))) : h('p', { class: 'empty' }, wk + '没有完成的任务。')));
   }
 
   /* ---------- dialogs ---------- */
@@ -1029,32 +1128,69 @@
     state.spaces.map((s) => h('option', { value: s.id, selected: s.id === selected }, s.name)));
   const cancelButton = () => h('button', { type: 'button', class: 'btn ghost', onclick: closeDialog }, '取消');
 
-  function openTaskDialog(task) {
+  /* `draft` carries what was typed so far when the dialog is rebuilt after a step edit. */
+  function openTaskDialog(task, draft) {
+    const v = draft || { title: task ? task.title : '', date: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today(), time: task ? task.time || '' : '', minutes: task ? task.minutes : 30, space: task ? task.spaceId || '' : ui.space || '' };
+    const typed = () => ({ title: form.title.value, date: form.date.value, time: form.time.value, minutes: form.minutes.value, space: form.space.value });
+    const editStep = (op) => {
+      try {
+        if (!commit(C.editTaskSteps(state, task.id, op))) return;
+        const fresh = state.tasks.find((x) => x.id === task.id);
+        openTaskDialog(fresh, { ...typed(), minutes: fresh.minutes });
+      } catch (error) { toast(error.message); }
+    };
+    const mini = (label, glyph, onclick, disabled) => h('button', { type: 'button', class: 'mini', 'aria-label': label, title: label, onclick, disabled }, icon(glyph));
+    const steps = task && !task.done ? task.steps || [] : [];
+    const firstOpen = steps.findIndex((x) => !x.done);
+    const stepEditor = !task ? null : task.done ? (task.steps ? h('div', { class: 'field' }, h('span', {}, '分段'),
+      h('ol', { class: 'steps boxed' }, task.steps.map((x) => h('li', { class: 'done' }, h('span', {}, x.title), h('span', { class: 'sub' }, x.minutes + ' 分钟'))))) : null)
+      : h('div', { class: 'field' }, h('span', {}, steps.length ? '分段（计时按这个顺序进行，可以随时调整）' : '分段'),
+        steps.length ? h('div', { class: 'steps-edit boxed' }, h('ol', { class: 'steps' }, steps.map((x, n) => h('li', { class: x.done ? 'done' : '' },
+          h('span', { class: 'num' }, n + 1 + '.'),
+          h('input', { class: 'step-input', value: x.title, maxLength: 100, 'aria-label': '第 ' + (n + 1) + ' 段的内容',
+            onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } },
+            onchange: (e) => { if (e.target.value.trim() && e.target.value.trim() !== x.title) editStep({ kind: 'title', step: n, title: e.target.value }); else e.target.value = x.title; } }),
+          x.done ? h('span', { class: 'sub' }, x.minutes + ' 分 · 完成') : h('span', { class: 'step-tools' },
+            mini('减少 5 分钟', 'minus', () => editStep({ kind: 'minutes', step: n, delta: -5 }), x.minutes <= 5),
+            h('span', { class: 'step-min' }, x.minutes + ' 分'),
+            mini('增加 5 分钟', 'plus', () => editStep({ kind: 'minutes', step: n, delta: 5 })),
+            mini('上移', 'up', () => editStep({ kind: 'move', step: n, dir: -1 }), n <= firstOpen),
+            mini('删除这一段', 'close', () => editStep({ kind: 'remove', step: n }), steps.length <= 1)))))) : null,
+        h('div', { class: 'steps-foot' },
+          h('button', { type: 'button', class: 'pill soft', onclick: () => editStep({ kind: 'add' }) }, icon('plus'), steps.length ? '加一段' : '拆成几段来计时'),
+          steps.length ? h('span', { class: 'sub' }, '分段的修改立即保存') : null));
     const form = openDialog(task ? '编辑任务' : '新建任务', [
-      field('要做什么', h('input', { name: 'title', maxLength: 150, required: true, value: task ? task.title : '' })),
+      field('要做什么', h('input', { name: 'title', maxLength: 150, required: true, value: v.title })),
       h('div', { class: 'row' },
-        field('日期（可以留空）', h('input', { name: 'date', type: 'date', value: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today() })),
-        field('预计分钟', h('input', { name: 'minutes', type: 'number', min: 1, max: 1440, value: task ? task.minutes : 30, disabled: !!(task && task.steps) }))),
-      field('分区', spaceSelect(task ? task.spaceId : ui.space)),
-      task && task.steps ? h('div', { class: 'field' }, h('span', {}, '分段（计时会按这个顺序进行）'),
-        h('ol', { class: 'steps boxed' }, task.steps.map((s) => h('li', { class: s.done ? 'done' : '' }, h('span', {}, s.title), h('span', { class: 'sub' }, s.minutes + ' 分钟' + (s.done ? ' · 完成' : '')))))) : null,
+        field('日期（可以留空）', h('input', { name: 'date', type: 'date', value: v.date })),
+        field('开始时间（可以留空）', h('input', { name: 'time', type: 'time', value: v.time })),
+        field('预计分钟', h('input', { name: 'minutes', type: 'number', min: 1, max: 1440, value: v.minutes, disabled: !!(task && task.steps), title: task && task.steps ? '有分段时，总时长是各段之和' : '' }))),
+      h('p', { class: 'sub' }, '填了开始时间的任务会和课程一起显示在课表的周视图里，并在开始前提醒。'),
+      field('分区', h('select', { name: 'space' }, h('option', { value: '' }, '不分区'), state.spaces.map((x) => h('option', { value: x.id, selected: x.id === v.space }, x.name)))),
+      stepEditor,
     ], [
-      task ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这个任务？')) { change((s) => { s.tasks = s.tasks.filter((x) => x.id !== task.id); if (s.timer && s.timer.taskId === task.id) s.timer = null; }); closeDialog(); } } }, '删除') : null,
+      task ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这个任务？')) { undoable('任务已删除', () => change((s) => { s.tasks = s.tasks.filter((x) => x.id !== task.id); if (s.timer && s.timer.taskId === task.id) s.timer = null; })); closeDialog(); } } }, '删除') : null,
       h('span', { class: 'grow' }), cancelButton(),
       h('button', { class: 'btn dark', onclick: () => {
         const title = form.title.value.trim();
         const minutes = Math.round(Number(form.minutes.value));
         if (!title) return toast('请填写任务内容');
         if (!(minutes >= 1 && minutes <= 1440)) return toast('预计分钟请填 1–1440');
-        const values = { title, minutes, date: C.validDate(form.date.value) ? form.date.value : null, spaceId: form.space.value || null };
+        const date = C.validDate(form.date.value) ? form.date.value : null;
+        const time = C.validTime(form.time.value) ? form.time.value : null;
+        if (time && !date) return toast('填了开始时间，请同时选一个日期');
+        const values = { title, minutes, date, spaceId: form.space.value || null };
         const ok = change((s) => {
-          if (task) Object.assign(s.tasks.find((x) => x.id === task.id), values);
-          else s.tasks.push({ id: C.uid('t'), ...values, done: false, doneAt: null, createdAt: Date.now(), origin: 'user' });
+          const target = task ? s.tasks.find((x) => x.id === task.id) : { id: C.uid('t'), done: false, doneAt: null, createdAt: Date.now(), origin: 'user' };
+          Object.assign(target, values);
+          if (target.steps) target.minutes = target.steps.reduce((n, x) => n + x.minutes, 0);
+          if (time) target.time = time; else delete target.time;
+          if (!task) s.tasks.push(target);
         });
         if (ok) closeDialog();
       } }, '保存'),
     ]);
-    form.title.focus();
+    if (!draft) form.title.focus();
   }
 
   function openHabitDialog(habit) {
@@ -1064,7 +1200,7 @@
         field('每周几次', h('input', { name: 'perWeek', type: 'number', min: 1, max: 7, value: habit ? habit.perWeek : 3 })),
         field('分区', spaceSelect(habit ? habit.spaceId : ui.space))),
     ], [
-      habit ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这个习惯和它的打卡记录？')) { change((s) => { s.habits = s.habits.filter((x) => x.id !== habit.id); }); closeDialog(); } } }, '删除') : null,
+      habit ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这个习惯和它的打卡记录？')) { undoable('习惯已删除', () => change((s) => { s.habits = s.habits.filter((x) => x.id !== habit.id); })); closeDialog(); } } }, '删除') : null,
       h('span', { class: 'grow' }), cancelButton(),
       h('button', { class: 'btn dark', onclick: () => {
         const title = form.title.value.trim();
@@ -1095,7 +1231,7 @@
       current ? h('button', { type: 'button', class: 'btn danger', onclick: () => {
         if (!confirm('删除分区「' + current.name + '」？里面的任务和习惯会保留，变成不分区。')) return;
         ui.space = null;
-        commit(C.normalize({ ...C.clone(state), spaces: state.spaces.filter((x) => x.id !== current.id) }));
+        undoable('分区已删除', () => commit(C.normalize({ ...C.clone(state), spaces: state.spaces.filter((x) => x.id !== current.id) })));
         closeDialog();
       } }, '删除') : null,
       h('span', { class: 'grow' }), cancelButton(),
@@ -1118,7 +1254,7 @@
       field('日期', h('input', { name: 'date', type: 'date', value: current ? current.date : today() })),
       field('内容', h('textarea', { name: 'text', rows: 8, maxLength: 4000, value: current ? current.text : '' })),
     ], [
-      current ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这条反思？')) { change((s) => { s.reflections = s.reflections.filter((x) => x.id !== current.id); }); closeDialog(); } } }, '删除') : null,
+      current ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这条反思？')) { undoable('反思已删除', () => change((s) => { s.reflections = s.reflections.filter((x) => x.id !== current.id); })); closeDialog(); } } }, '删除') : null,
       h('span', { class: 'grow' }), cancelButton(),
       h('button', { class: 'btn dark', onclick: () => {
         const text = form.text.value.trim();
@@ -1129,6 +1265,21 @@
           else s.reflections.push({ id: C.uid('r'), date, text, at: Date.now(), source: 'user' });
         });
         if (ok) closeDialog();
+      } }, '保存'),
+    ]);
+    form.text.focus();
+  }
+
+  function openMemoryDialog(memory) {
+    const form = openDialog('修改这条记忆', [
+      field('助手每次回答前都会读到这句话', h('textarea', { name: 'text', rows: 4, maxLength: 300, value: memory.text })),
+    ], [
+      h('span', { class: 'grow' }), cancelButton(),
+      h('button', { class: 'btn dark', onclick: () => {
+        const text = form.text.value.replace(/\s+/g, ' ').trim();
+        if (!text) return toast('请写一点内容，或者关掉后直接删除这条');
+        if (state.memory.some((x) => x.text === text && x.id !== memory.id)) return toast('已经有一条相同的记忆');
+        if (change((s) => { Object.assign(s.memory.find((x) => x.id === memory.id), { text, source: 'user' }); })) closeDialog();
       } }, '保存'),
     ]);
     form.text.focus();
@@ -1147,7 +1298,7 @@
 
   /* Settings work on a draft. Choosing a provider fills in its address; pasting a key loads its models. */
   function openSettingsDialog(draft) {
-    const d = draft && draft.provider ? draft : { ...state.settings.agent, key: '', status: [], busy: '', manual: false, name: state.settings.prefs.name || '', segment: state.settings.prefs.segment, daily: state.settings.prefs.dailyMinutes || '' };
+    const d = draft && draft.provider ? draft : { ...state.settings.agent, key: '', status: [], busy: '', manual: false, name: state.settings.prefs.name || '', segment: state.settings.prefs.segment, daily: state.settings.prefs.dailyMinutes || '', remind: Number(state.settings.prefs.remindMinutes) || 0 };
     panelDraft = d;
     const preset = Providers.find(d.provider);
     const savedKey = platform.loadKey(d.provider);
@@ -1187,7 +1338,7 @@
         const next = C.normalize(JSON.parse(await file.text()));
         next.settings.agent = Providers.migrate(next.settings.agent);
         if (!confirm('导入会替换现在的全部数据（' + next.tasks.length + ' 个任务，' + next.habits.length + ' 个习惯）。继续吗？')) return;
-        if (commit(next)) { closePanel(); toast('已导入'); }
+        if (undoable('已导入，原来的数据可以撤销找回', () => commit(next))) closePanel();
       } catch (error) { toast('导入失败：' + error.message); }
     } });
     const useList = d.models.length && !d.manual;
@@ -1203,7 +1354,7 @@
       try { if (d.key) platform.saveKey(d.provider, d.key); } catch (error) { return toast('密钥没有保存：' + error.message); }
       const ok = change((s) => {
         s.settings.agent = { provider: d.provider, baseUrl: d.baseUrl, modelId: d.modelId, models: d.models, vision: d.vision };
-        Object.assign(s.settings.prefs, { segment, dailyMinutes: daily > 0 ? daily : null, name: String(d.name).trim().slice(0, 20) });
+        Object.assign(s.settings.prefs, { segment, dailyMinutes: daily > 0 ? daily : null, name: String(d.name).trim().slice(0, 20), remindMinutes: Number(d.remind) || 0 });
       });
       if (ok) { d.key = ''; toast('设置已保存'); }
     };
@@ -1240,6 +1391,10 @@
           field('一段专注（分钟）', h('input', { name: 'segment', type: 'number', min: 5, max: 90, value: d.segment, oninput: (e) => { d.segment = e.target.value; } })),
           field('每天可安排（分钟）', h('input', { name: 'daily', type: 'number', min: 0, max: 960, value: d.daily, oninput: (e) => { d.daily = e.target.value; } }))),
         h('p', { class: 'sub' }, '助手按这两个数字拆分步骤和安排每天的任务量。计时记录多了以后，它会参考你的真实速度。'),
+        field('上课和有开始时间的任务，提前多久提醒', h('select', { name: 'remind', onchange: (e) => { d.remind = Number(e.target.value); } },
+          [[0, '不提醒'], [5, '提前 5 分钟'], [10, '提前 10 分钟'], [15, '提前 15 分钟'], [30, '提前 30 分钟']].map(([value, label]) => h('option', { value, selected: value === d.remind }, label)))),
+        h('p', { class: 'sub' }, '提醒会在这个窗口里弹出并响一声，所以需要程序开着。' + (canNotify() ? (Notification.permission === 'granted' ? '系统通知已开启，窗口在后台时也能看到。' : Notification.permission === 'denied' ? '系统通知被浏览器或系统拒绝了，只能在窗口里提醒。' : '') : '这个环境不支持系统通知，只能在窗口里提醒。')),
+        canNotify() && Notification.permission === 'default' ? h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn outline slim', onclick: () => { try { Promise.resolve(Notification.requestPermission()).then(again, again); } catch { toast('这个环境不能开启系统通知'); } } }, '开启系统通知')) : null,
         saveRow(),
       ]],
       memory: ['记忆', 'note', () => {
@@ -1250,7 +1405,8 @@
           h('p', { class: 'sub' }, '助手每次回答前都会读这些内容。它在聊天中学到的事会自动记在这里，你可以随时删除或自己添加。'),
           state.memory.length ? h('ul', { class: 'memory' }, state.memory.map((m) => h('li', {},
             h('span', {}, m.text, h('span', { class: 'sub' }, m.source === 'user' ? ' · 你添加的' : ' · 助手记下的')),
-            h('button', { type: 'button', class: 'icon-btn small', 'aria-label': '删除这条记忆', onclick: () => change((s) => { s.memory = s.memory.filter((x) => x.id !== m.id); }) }, icon('trash')))))
+            h('button', { type: 'button', class: 'icon-btn small', 'aria-label': '修改这条记忆', title: '修改', onclick: () => openMemoryDialog(m) }, icon('edit')),
+            h('button', { type: 'button', class: 'icon-btn small', 'aria-label': '删除这条记忆', title: '删除', onclick: () => change((s) => { s.memory = s.memory.filter((x) => x.id !== m.id); }) }, icon('trash')))))
             : h('p', { class: 'empty' }, '还没有记忆。例如：「我早上效率最高」「周三晚上有课」。'),
           h('div', { class: 'row tight' }, input, h('button', { type: 'button', class: 'btn dark', onclick: add }, '添加')),
         ];
@@ -1265,7 +1421,7 @@
           } }, '导出 JSON'),
           h('button', { type: 'button', class: 'btn outline slim', onclick: () => importInput.click() }, '导入 JSON'), importInput),
         h('div', { class: 'row' },
-          h('button', { type: 'button', class: 'btn ghost', onclick: () => { if (confirm('清空全部对话？任务、记录和记忆会保留。')) { change((s) => { s.messages = []; }); toast('对话已清空'); } } }, '清空对话')),
+          h('button', { type: 'button', class: 'btn ghost', onclick: () => { if (confirm('清空全部对话？任务、记录和记忆会保留。')) { closePanel(); undoable('对话已清空', () => change((s) => { s.messages = []; })); } } }, '清空对话')),
       ]],
     };
     if (!sections[ui.panelSection]) ui.panelSection = 'review';
@@ -1294,7 +1450,7 @@
   }
 
   /* ---------- shell ---------- */
-  const timetable = window.TPlanTimetableUI({ getState: () => state, commit, toast, h, openWorkspace: () => { ui.mode = 'timetable'; render(); } });
+  const timetable = window.TPlanTimetableUI({ getState: () => state, commit, toast, h, openWorkspace: () => { ui.mode = 'timetable'; render(); }, undoable, openTask: (id) => { const task = state.tasks.find((x) => x.id === id); if (task) openTaskDialog(task); } });
   function render() {
     renderRail();
     renderList();

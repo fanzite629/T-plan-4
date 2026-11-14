@@ -24,15 +24,15 @@
     '',
     '【工具】（只读，每次一个，最多 6 次）',
     'read_attachment {"name":"文件名","offset":0}：继续读取附件，从 offset 字符开始。attachments 里只给了开头，文件更长时用它读后面的内容。',
-    'read_path {"path":"C:\\\\..."}：读取用户电脑上的一个文件（用户在消息里给出路径时使用）。',
-    'list_dir {"path":"C:\\\\..."}：列出一个文件夹里的文件（用户给出代码文件夹时，先列出再读取重要的文件）。',
+    '你不能按路径读取用户电脑上的文件或文件夹。用户只给出路径时，请他把文件拖进聊天框。',
     'get_history {"days":14}：读取最近的计时记录和任务完成情况的明细。',
     '',
     '【最终回答的字段】',
     'reply：用用户 message 的语言，简短、具体。说“我建议”，不要说“已经添加”，因为用户确认后才会写入。',
     'actions：建议的修改，没有就给空数组，最多 20 项：',
-    '  {"type":"add_task","title":"","date":"YYYY-MM-DD 或 null","minutes":30,"space":"分区名称或 null","steps":[{"title":"","minutes":25}]}',
-    '  {"type":"update_task","taskId":"","date":"","minutes":30,"title":""}（只写要改的字段）',
+    '  {"type":"add_task","title":"","date":"YYYY-MM-DD 或 null","time":"HH:MM 或 null","minutes":30,"space":"分区名称或 null","steps":[{"title":"","minutes":25}]}',
+    '  time 是任务开始的钟点（24 小时制），只有 date 不为 null 时才有效。用户说了几点、或者你要把任务排在某个空闲时段时填写；填了以后任务会和课程一起显示在周视图里，并在开始前提醒。不知道几点就用 null，不要编一个。有 time 的任务从 time 到 time 加 minutes 这一段不能和 scheduledCourses 或 openTasks 里已有 time 的任务重叠。',
+    '  {"type":"update_task","taskId":"","date":"","time":"HH:MM 或 null","minutes":30,"title":""}（只写要改的字段）',
     '  {"type":"complete_task","taskId":""}  {"type":"delete_task","taskId":""}',
     '  {"type":"add_habit","title":"","perWeek":3,"space":""}',
     '  {"type":"add_goal","title":"","deadline":"YYYY-MM-DD 或 null","space":"","milestones":[{"title":"第 1 周：……","due":"YYYY-MM-DD","tasks":[{"title":"","date":"","minutes":60,"steps":[]}]}]}',
@@ -104,14 +104,17 @@
 
   /* Runs one user turn. `chat(system, user)` calls the model; `tools` maps tool names to functions.
      `onStep` reports what the agent is doing so the UI can show it. */
-  async function run({ context, attachments = [], library = new Map(), chat, tools = {}, onStep = () => {} }) {
+  async function run({ context, attachments = [], library = new Map(), chat, tools = {}, onStep = () => {}, signal = null }) {
     const toolResults = [];
     const documents = attachments.filter((a) => !a.image);
     const pictures = attachments.filter((a) => a.image);
     const payload = { ...context, attachments: documents.map(attachmentSummary), images: pictures.map((a) => a.name), otherFiles: [...library.keys()].filter((name) => !attachments.some((a) => a.name === name)), toolResults };
     const allTools = { read_attachment: (args) => readAttachment(library, args), ...tools };
+    const stopped = () => { if (signal && signal.aborted) { const e = new Error('已停止'); e.name = 'AbortError'; throw e; } };
     for (let step = 0; ; step++) {
+      stopped();
       const answer = parseReply(await chat(SYSTEM_PROMPT, JSON.stringify(payload), pictures.map((a) => a.image)));
+      stopped();
       if (!answer.tool) return { ...answer, toolCalls: toolResults.length };
       if (step >= MAX_TOOL_STEPS) {
         return { tool: null, reply: '我读取了很多次资料还没有得出结论。请告诉我最想先安排哪一部分。', actions: [], options: [], questions: [], memory: [], startTimer: false, toolCalls: toolResults.length };
