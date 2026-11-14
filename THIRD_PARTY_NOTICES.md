@@ -20,6 +20,10 @@
 
 构建脚本会复制 SDK 许可和 Fixed Runtime 许可到发布目录，保留运行时目录内附带的第三方许可。不要删减运行时文件或把本项目表述为 Microsoft 官方产品。
 
+## 大学生工作台（功能设计参考）
+
+`references/workstation-student/` 收录 @赛博老爸的大学生工作台 v1.1。原作者署名与许可随项目保留。原许可允许个人学习和免费分享，商业使用须取得作者书面授权。[上游仓库](https://github.com/cyberdaddyleo/workstation-student) · [原许可](references/workstation-student/LICENSE) · [参考说明](references/WORKSTATION_STUDENT.md)
+
 ## 操作系统组件
 
 桌面宿主使用 Windows 的 .NET Framework、DPAPI 和 `winsqlite3.dll`。这些系统组件不作为项目源码复制或再实现。

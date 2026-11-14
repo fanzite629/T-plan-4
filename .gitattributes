@@ -14,3 +14,6 @@
 v4/vendor/** -text
 desktop/vendor/SDK-*.txt -text
 desktop/vendor/WebView2-Fixed-Runtime-LICENSE.html -text
+
+# Preserve the imported reference files byte for byte.
+references/workstation-student/** -text

@@ -89,6 +89,7 @@ desktop/               桌面构建共用的 manifest、.config 与依赖来源�
 v3-desktop/            v4 仍使用的图标源文件及转换脚本（仅资源）
 tools/                 固定版本 WebView2 依赖获取脚本
 docs/                  架构、构建、课表和验证文档
+references/            第三方功能设计参考资料
 ```
 
 `desktop/` 与 `v3-desktop/` 只保留 v4 构建实际引用的资源，不需要另行克隆旧版本。
@@ -115,6 +116,10 @@ C# 原生测试与 WebView2 界面自检见 [开发与构建](docs/DEVELOPMENT.m
 - [版本变更](CHANGELOG.md)
 - [第三方组件与许可](THIRD_PARTY_NOTICES.md)
 - [Windows 使用说明](v4-desktop/使用说明.txt)
+
+## 功能设计参考
+
+「大学生工作台」由 @赛博老爸开发。这里收录原项目的页面、文档和截图，供 T计划 的课表、学科资料、专注计时等功能设计参考。[参考项目使用说明](references/WORKSTATION_STUDENT.md)
 
 ## 当前限制
 
