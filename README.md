@@ -4,6 +4,16 @@
 
 本仓库收录 **v4 系列当前的 v4.1.0 源码**，包含浏览器页面、Windows x64 免安装桌面程序、课表导入、自动化测试和构建资源。桌面窗口名称仍为「T计划 v4」。
 
+## 下载 Windows 免安装版
+
+**[下载 T计划 v4.1.0 Windows x64 ZIP](https://github.com/fanzite629/T-plan-4/releases/download/v4.1.0/TPlan-v4.1.0-Windows-x64-portable.zip)** · [发布说明与 SHA-256](https://github.com/fanzite629/T-plan-4/releases/tag/v4.1.0)
+
+1. 下载 `TPlan-v4.1.0-Windows-x64-portable.zip`，右键选择「全部解压缩」到本机文件夹。
+2. 打开解压后的 `package-4.1` 文件夹，双击 `T计划 v4.exe`。请保留同目录的 `app`、`runtime`、DLL 和许可文件。
+3. 首次打开即可新建任务和开始计时。导入课表时，先在「课表 → 学期与节次」保存学校作息，再拖入文件并核对预览。配置 AI 模型后可使用对话规划和模型识别。
+
+适用于 Windows 10/11 x64，要求 .NET Framework 4.8。ZIP 已包含 WebView2 运行组件，解压后即可启动。详细设置和常见问题见 [Windows 免安装版使用指南](docs/WINDOWS.md)。
+
 ## 功能
 
 | 功能 | 当前实现 |
@@ -35,11 +45,11 @@ python -m http.server 8080 --bind 127.0.0.1
 # 浏览器打开 http://127.0.0.1:8080/v4/
 ```
 
-## Windows 免安装版
+## 从源码构建 Windows 版
 
 运行目标为 Windows 10/11 x64 和 .NET Framework 4.8。构建结果包含固定版本 WebView2；使用者无需安装 Node.js、Python 或启动服务器。
 
-本仓库存放源码，**GitHub 的 Download ZIP 是源码包，不能直接当作桌面软件运行**。生成可运行目录的方法：
+需要自行编译时，在仓库根目录执行以下命令。
 
 ```powershell
 # 第一次构建：阅读第三方许可后，从固定的官方地址获取依赖
@@ -97,6 +107,7 @@ C# 原生测试与 WebView2 界面自检见 [开发与构建](docs/DEVELOPMENT.m
 ## 文档
 
 - [开发与构建](docs/DEVELOPMENT.md)
+- [Windows 免安装版使用指南](docs/WINDOWS.md)
 - [模块与数据流](docs/ARCHITECTURE.md)
 - [课表导入指南](docs/TIMETABLE.md)
 - [验证记录](docs/VALIDATION.md)
