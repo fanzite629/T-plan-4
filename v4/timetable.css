@@ -79,3 +79,16 @@
   .tt-grid { min-width:640px; }
   .tt-grid-head,.tt-grid-body { grid-template-columns:46px repeat(7,minmax(84px,1fr)); }
 }
+.tt-lane { cursor:cell; }
+.tt-now { position:absolute; left:0; right:0; height:0; border-top:2px solid var(--bad); z-index:2; pointer-events:none; }
+.tt-now::before { content:""; position:absolute; left:-4px; top:-5px; width:8px; height:8px; border-radius:50%; background:var(--bad); }
+.tt-event.live { outline:2px solid var(--ok); }
+.tt-event .tt-live { color:var(--ok); font-weight:650; }
+.tt-grid:has(.has-periods) .tt-grid-head,.tt-grid:has(.has-periods) .tt-grid-body { grid-template-columns:82px repeat(7,minmax(110px,1fr)); }
+.tt-period { position:absolute; left:4px; width:22px; display:grid; place-items:center; border-radius:6px; background:var(--soft); color:var(--t2); font-size:11px; font-style:normal; font-weight:650; }
+.tt-course-list { display:flex; flex-direction:column; gap:8px; }
+.tt-course-row { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:10px 12px; border:1px solid var(--line); border-radius:12px; }
+.tt-course-row > div:first-child { display:flex; flex-direction:column; min-width:0; }
+.tt-course-row small { color:var(--t2); font-size:12px; }
+.tt-course-row .btn { font-size:13px; }
+@media(max-width:680px) { .tt-grid:has(.has-periods) .tt-grid-head,.tt-grid:has(.has-periods) .tt-grid-body { grid-template-columns:70px repeat(7,minmax(84px,1fr)); } }

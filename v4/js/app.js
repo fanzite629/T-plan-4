@@ -511,8 +511,8 @@
 
   /* What each kind of space shows, and in which order. "all" is the overview across spaces. */
   const TABS = {
-    all: [['today', '今天'], ['week', '本周'], ['later', '之后'], ['goals', '目标'], ['done', '完成']],
-    study: [['today', '今天'], ['week', '本周'], ['later', '之后'], ['goals', '目标'], ['done', '完成']],
+    all: [['today', '今天'], ['week', '本周'], ['later', '之后'], ['goals', '目标'], ['cards', '卡片'], ['done', '完成']],
+    study: [['today', '今天'], ['week', '本周'], ['later', '之后'], ['cards', '卡片'], ['goals', '目标'], ['done', '完成']],
     project: [['goals', '目标'], ['today', '今天'], ['week', '本周'], ['later', '之后'], ['done', '完成']],
     habit: [['checkin', '打卡'], ['today', '任务'], ['goals', '目标']],
     life: [['todo', '待办'], ['done', '已完成']],
@@ -536,6 +536,8 @@
     } else if (tab === 'goals') {
       body = goals.length ? goals.map((g) => goalCard(g, type === 'project'))
         : h('p', { class: 'empty' }, type === 'project' ? '这个项目还没有目标。在聊天里说说这个项目要做成什么、什么时候要，助手会拆成阶段和任务。' : '还没有目标。在聊天里说「我想在 12 月底前学完单片机」，助手会拆成每周和每天的任务。');
+    } else if (tab === 'cards') {
+      body = cardsBody();
     } else if (tab === 'checkin') {
       body = [
         h('h3', { class: 'group-title' }, '本周打卡'),
@@ -556,7 +558,7 @@
       body = [tab === 'today' && !ui.space ? timetable.daily(today()) : null, quick, tasks.length ? tasks.map(taskRow) : h('p', { class: 'empty' }, emptyText[tab]),
         tab === 'today' && type !== 'habit' && habits.length ? [h('h3', { class: 'group-title' }, '习惯'), ...habits.map(habitRow)] : null];
     }
-    const foot = type === 'habit' ? [button('outline', '新习惯', () => openHabitDialog(null)), button('ghost', '新记录项', openMetricDialog)]
+    const foot = tab === 'cards' && !query ? [button('outline', '新卡片', () => openCardDialog(null))] : type === 'habit' ? [button('outline', '新习惯', () => openHabitDialog(null)), button('ghost', '新记录项', openMetricDialog)]
       : type === 'life' ? [button('outline', '新建任务', () => openTaskDialog(null))]
         : type === 'project' ? [button('outline', '新建任务', () => openTaskDialog(null))]
           : [button('outline', '新建任务', () => openTaskDialog(null)), button('ghost', '新习惯', () => openHabitDialog(null))];
@@ -569,10 +571,164 @@
       h('label', { class: 'list-search' }, icon('search'), h('input', { type: 'search', value: ui.search, placeholder: '搜索任务（包括已完成的）', 'aria-label': '搜索任务', maxLength: 60,
         // The list is rebuilt on every keystroke, so focus is put back; an input method's unfinished text is left alone.
         oninput: (e) => { if (e.isComposing) return; searchFor(e.target.value); }, oncompositionend: (e) => searchFor(e.target.value) })),
-      query ? null : h('div', { class: 'segmented', role: 'tablist' }, tabs.map(([key, label]) =>
+      query ? '' : upNext(current),
+      query ? '' : h('div', { class: 'segmented', role: 'tablist' }, tabs.map(([key, label]) =>
         h('button', { role: 'tab', 'aria-selected': String(tab === key), class: tab === key ? 'on' : '', onclick: () => { ui.tabs[type] = key; render(); } }, label))),
       h('div', { class: 'list-scroll' }, body),
       h('div', { class: 'list-foot' }, foot));
+  }
+
+  /* ---------- what is coming: the class now or next, exams and deadlines counted down, cards due ---------- */
+  const T = window.TPlanTimetable;
+  const courseTitles = () => [...new Set(T.normalize(state.schedule).courses.map((c) => c.title).filter(Boolean))];
+  const spaceForCourse = (title) => state.spaces.find((x) => x.course === title) || state.spaces.find((x) => !x.course && x.name === title.slice(0, 20)) || null;
+  /* The class in progress, or else the next one within a week. In a space tied to a course, only that course. */
+  function nextClass(current) {
+    if (current && !current.course) return null;
+    const t = today();
+    const now = new Date();
+    const clockNow = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    const events = T.events(state.schedule, t, C.addDays(t, 7)).filter((e) => !current || e.title === current.course);
+    const hit = events.find((e) => e.date > t || e.endTime > clockNow);
+    return hit ? { ...hit, running: hit.date === t && hit.startTime <= clockNow } : null;
+  }
+  function upNext(current) {
+    const t = today();
+    const lesson = nextClass(current);
+    const dates = C.upcomingDates(state, t, ui.space || undefined).slice(0, 3);
+    const due = C.dueCards(state, t, ui.space).length;
+    const days = (n) => (n === 0 ? h('b', { class: 'soon' }, '今天') : h('b', { class: n <= 7 ? 'soon' : '' }, String(n), h('small', {}, ' 天')));
+    const rows = [
+      lesson ? h('button', { class: 'next-row', onclick: () => timetable.details(lesson), title: '查看这节课' },
+        h('b', { class: lesson.running ? 'live' : '' }, lesson.running ? '上课中' : lesson.date === t ? lesson.startTime : dateLabel(lesson.date).split(' ')[0]),
+        h('span', { class: 'next-text' }, lesson.title, h('small', {}, (lesson.running ? '到 ' + lesson.endTime : lesson.date === t ? '下一节 · 到 ' + lesson.endTime : lesson.startTime + '–' + lesson.endTime) + (lesson.room ? ' · ' + lesson.room : '')))) : null,
+      ...dates.map((d) => h('button', { class: 'next-row', title: d.kind === 'goal' ? '这是一个目标的期限' : '修改这个日期',
+        onclick: () => { if (d.kind === 'goal') { ui.tabs[current ? current.type : 'all'] = 'goals'; render(); } else openDateDialog(state.dates.find((x) => x.id === d.id)); } },
+        days(d.daysLeft), h('span', { class: 'next-text' }, d.title, h('small', {}, plainDate(d.date) + (d.time ? ' ' + d.time : '') + (d.place ? ' · ' + d.place : '') + (d.kind === 'goal' ? ' · 目标期限' : ''))))),
+      due ? h('button', { class: 'next-row', onclick: () => startReview(), title: '开始复习' }, h('b', { class: 'soon' }, String(due), h('small', {}, ' 张')), h('span', { class: 'next-text' }, '复习卡片到期', h('small', {}, '点这里开始复习'))) : null,
+    ].filter(Boolean);
+    return h('section', { class: 'up-next', id: 'upNext', 'aria-label': '接下来' },
+      h('div', { class: 'up-next-head' }, h('span', {}, '接下来'), h('button', { class: 'text-btn', onclick: () => openDateDialog(null) }, '+ 考试 / 截止日期')),
+      rows.length ? rows : h('p', { class: 'sub' }, '记下考试或截止日期，这里会显示倒计时。'));
+  }
+  // The clock moves on without any change to the data, so this one block is refreshed on its own.
+  setInterval(() => { const old = $('#upNext'); if (old && !ui.search.trim()) old.replaceWith(upNext(space(ui.space))); }, 60000);
+
+  function openDateDialog(item, preset = {}) {
+    const form = openDialog(item ? '修改日期' : '考试 / 截止日期', [
+      field('是什么（例如 操作系统期末考试、六级报名截止）', h('input', { name: 'title', maxLength: 80, required: true, value: item ? item.title : preset.title || '' })),
+      h('div', { class: 'row' },
+        field('日期', h('input', { name: 'date', type: 'date', required: true, value: item ? item.date : '' })),
+        field('时间（可以留空）', h('input', { name: 'time', type: 'time', value: item ? item.time || '' : '' }))),
+      field('地点（可以留空）', h('input', { name: 'place', maxLength: 40, value: item ? item.place || '' : '' })),
+      field('分区', spaceSelect(item ? item.spaceId : preset.spaceId !== undefined ? preset.spaceId : ui.space)),
+    ], [
+      item ? h('button', { type: 'button', class: 'btn danger', onclick: () => { undoable('日期已删除', () => change((s) => { s.dates = s.dates.filter((x) => x.id !== item.id); })); closeDialog(); } }, '删除') : null,
+      h('span', { class: 'grow' }), cancelButton(),
+      h('button', { class: 'btn dark', onclick: () => {
+        const title = form.title.value.replace(/\s+/g, ' ').trim();
+        if (!title) return toast('请填写名称');
+        if (!C.validDate(form.date.value)) return toast('请选择日期');
+        const values = { title, date: form.date.value, place: form.place.value.trim(), spaceId: form.space.value || null };
+        const ok = change((s) => {
+          const target = item ? s.dates.find((x) => x.id === item.id) : { id: C.uid('d'), createdAt: Date.now() };
+          Object.assign(target, values);
+          if (C.validTime(form.time.value)) target.time = form.time.value; else delete target.time;
+          if (!item) s.dates.push(target);
+        });
+        if (ok) closeDialog();
+      } }, '保存'),
+    ]);
+    form.title.focus();
+  }
+
+  /* ---------- review cards ---------- */
+  function cardsBody() {
+    const t = today();
+    const mine = state.cards.filter((c) => !ui.space || c.spaceId === ui.space).sort((a, b) => a.due.localeCompare(b.due) || a.createdAt - b.createdAt);
+    const due = C.dueCards(state, t, ui.space);
+    const stats = C.cardStats(state, t, ui.space);
+    const dueText = (c) => (c.due <= t ? '今天复习' : dateLabel(c.due) + '再复习');
+    return [
+      h('div', { class: 'cards-head' },
+        h('div', {}, h('strong', {}, due.length ? '今天要复习 ' + due.length + ' 张' : mine.length ? '今天没有到期的卡片' : '还没有复习卡片'),
+          mine.length ? h('span', { class: 'sub' }, '共 ' + stats.total + ' 张' + (stats.recentAnswers ? ' · 最近 14 天回答 ' + stats.recentAnswers + ' 次，记住 ' + stats.recentRemembered + ' 次' : ' · 还没有回答记录')) : null),
+        due.length ? h('button', { class: 'btn dark', onclick: () => startReview() }, '开始复习') : null),
+      mine.length ? mine.map((c) => h('button', { class: 'card-row' + (c.due <= t ? ' due' : ''), onclick: () => openCardDialog(c) },
+        h('span', { class: 'task-title' }, c.front),
+        h('span', { class: 'task-meta' }, (!ui.space && space(c.spaceId) ? space(c.spaceId).name + ' · ' : '') + dueText(c) + (c.reviews.length ? ' · 已连续记住 ' + c.stage + ' 次' : ' · 新卡片'))))
+        : h('p', { class: 'empty' }, '一张卡片是一问一答。记住了就隔 1、2、4、7、15、30 天再出现，没记住第二天再来。点下面的「新卡片」，或者把笔记、课件拖给助手说「帮我出复习卡片」。'),
+    ];
+  }
+  function openCardDialog(card, keepSpace) {
+    const answers = card ? card.reviews.length : 0;
+    const form = openDialog(card ? '修改卡片' : '新卡片', [
+      field('问题（只考一个知识点）', h('textarea', { name: 'front', rows: 3, maxLength: 300, value: card ? card.front : '' })),
+      field('答案', h('textarea', { name: 'back', rows: 5, maxLength: 800, value: card ? card.back : '' })),
+      field('分区', spaceSelect(card ? card.spaceId : keepSpace !== undefined ? keepSpace : ui.space)),
+      card ? h('p', { class: 'sub' }, (answers ? '回答过 ' + answers + ' 次，记住 ' + card.reviews.filter((r) => r.ok).length + ' 次。' : '还没有复习过。') + (card.due <= today() ? '今天到期。' : '下次复习：' + dateLabel(card.due) + '。')) : null,
+    ], [
+      card ? h('button', { type: 'button', class: 'btn danger', onclick: () => { undoable('卡片已删除', () => change((s) => { s.cards = s.cards.filter((x) => x.id !== card.id); })); closeDialog(); } }, '删除') : null,
+      h('span', { class: 'grow' }), cancelButton(),
+      !card ? h('button', { type: 'button', class: 'btn outline slim', onclick: () => save(true) }, '保存并再加一张') : null,
+      h('button', { class: 'btn dark', onclick: () => save(false) }, '保存'),
+    ]);
+    function save(again) {
+      const front = form.front.value.trim();
+      const back = form.back.value.trim();
+      if (!front || !back) return toast('问题和答案都要填');
+      const spaceId = form.space.value || null;
+      const ok = change((s) => {
+        if (card) Object.assign(s.cards.find((x) => x.id === card.id), { front, back, spaceId });
+        else s.cards.push(C.newCard({ front, back }, spaceId, Date.now(), 'user'));
+      });
+      if (!ok) return;
+      if (again) openCardDialog(null, spaceId || ''); else closeDialog();
+    }
+    form.front.focus();
+  }
+  /* Goes through the cards due today one at a time: recall first, then look, then say honestly which it was. */
+  function startReview() {
+    const queue = C.dueCards(state, today(), ui.space).map((c) => c.id);
+    if (!queue.length) return toast('今天没有到期的卡片');
+    let index = 0;
+    let shown = false;
+    let remembered = 0;
+    const answer = (ok) => {
+      try { if (!commit(C.reviewCard(state, queue[index], ok, Date.now()))) return; } catch (error) { toast(error.message); }
+      if (ok) remembered++;
+      index++; shown = false; draw();
+    };
+    const onKey = (e) => {
+      if (e.target.closest('button')) return;
+      if (!shown && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); shown = true; draw(); }
+      else if (shown && e.key === '1') answer(false);
+      else if (shown && e.key === '2') answer(true);
+    };
+    function draw() {
+      const card = state.cards.find((c) => c.id === queue[index]);
+      if (index >= queue.length || !card) {
+        const form = openDialog('复习完了', [h('p', {}, '这次复习了 ' + index + ' 张，记住 ' + remembered + ' 张。'), index > remembered ? h('p', { class: 'sub' }, '没记住的 ' + (index - remembered) + ' 张明天会再出现。') : null], [h('span', { class: 'grow' }), h('button', { class: 'btn dark', onclick: closeDialog }, '好')]);
+        form.querySelector('.btn.dark').focus();
+        return;
+      }
+      const sp = space(card.spaceId);
+      const form = openDialog('复习卡片 ' + (index + 1) + ' / ' + queue.length, [
+        sp ? h('span', { class: 'sub' }, sp.name) : null,
+        h('div', { class: 'review-face' }, card.front),
+        shown ? h('div', { class: 'review-face back' }, card.back) : h('p', { class: 'sub' }, '先在心里答一遍，再看答案。'),
+      ], shown ? [
+        h('button', { type: 'button', class: 'btn outline slim', onclick: () => answer(false) }, '没记住（1）'), h('span', { class: 'grow' }),
+        h('button', { type: 'button', class: 'btn dark', onclick: () => answer(true) }, '记住了（2）'),
+      ] : [
+        h('button', { type: 'button', class: 'btn ghost', onclick: closeDialog }, '先到这里'), h('span', { class: 'grow' }),
+        h('button', { type: 'button', class: 'btn dark', onclick: () => { shown = true; draw(); } }, '看答案（空格）'),
+      ]);
+      form.tabIndex = -1;
+      form.addEventListener('keydown', onKey);
+      form.focus();
+    }
+    draw();
   }
 
   function searchFor(value) {
@@ -641,6 +797,8 @@
           onchange: (e) => { try { commit(C.editProposal(state, message.id, index, { kind: 'text', text: e.target.value })); } catch (error) { toast(error.message); } } })
         : h('p', { class: 'reflection-text' }, a.text));
     }
+    if (a.type === 'add_date') return line('日期', a.title, plainDate(a.date) + (a.time ? ' ' + a.time : '') + (a.place ? ' · ' + a.place : '') + ' · ' + (C.daysBetween(today(), a.date) >= 0 ? '还有 ' + C.daysBetween(today(), a.date) + ' 天' : '已经过去'));
+    if (a.type === 'add_cards') return line('卡片', a.cards.length + ' 张复习卡片', a.spaceId ? (space(a.spaceId) || {}).name : '', h('ol', { class: 'card-preview' }, a.cards.map((c) => h('li', {}, h('span', {}, c.front), h('small', {}, c.back)))));
     if (a.type === 'log_metric') return line('记录', a.name + ' ' + a.value + (a.unit ? ' ' + a.unit : ''), a.date ? dateLabel(a.date) : '今天');
     return line('记住', a.text);
   }
@@ -1226,6 +1384,8 @@
     const form = openDialog(current ? '编辑分区' : '新分区', [
       field('名称（例如一门课、一个项目）', h('input', { name: 'name', maxLength: 20, required: true, value: current ? current.name : '' })),
       field('这个分区用来做什么', h('select', { name: 'type' }, C.SPACE_TYPES.map((t) => h('option', { value: t.id, selected: t.id === (current ? current.type : 'study') }, t.name + '：' + t.hint)))),
+      courseTitles().length ? field('对应课表里的哪门课（可以不选）', h('select', { name: 'course' }, h('option', { value: '' }, '不对应'),
+        courseTitles().map((title) => h('option', { value: title, selected: !!current && current.course === title }, title)))) : null,
       field('颜色', swatches),
     ], [
       current ? h('button', { type: 'button', class: 'btn danger', onclick: () => {
@@ -1240,8 +1400,10 @@
         if (!name) return toast('请填写分区名称');
         if (state.spaces.some((x) => x.name === name && x !== current)) return toast('已经有同名分区');
         const ok = change((s) => {
-          if (current) Object.assign(s.spaces.find((x) => x.id === current.id), { name, color, type: form.type.value });
-          else s.spaces.push({ id: C.uid('space'), name, color, type: form.type.value });
+          const target = current ? s.spaces.find((x) => x.id === current.id) : { id: C.uid('space') };
+          Object.assign(target, { name, color, type: form.type.value });
+          if (form.course && form.course.value) target.course = form.course.value; else delete target.course;
+          if (!current) s.spaces.push(target);
         });
         if (ok) closeDialog();
       } }, '保存'),
@@ -1450,7 +1612,24 @@
   }
 
   /* ---------- shell ---------- */
-  const timetable = window.TPlanTimetableUI({ getState: () => state, commit, toast, h, openWorkspace: () => { ui.mode = 'timetable'; render(); }, undoable, openTask: (id) => { const task = state.tasks.find((x) => x.id === id); if (task) openTaskDialog(task); } });
+  const timetable = window.TPlanTimetableUI({ getState: () => state, commit, toast, h, openWorkspace: () => { ui.mode = 'timetable'; render(); }, undoable, openTask: (id) => { const task = state.tasks.find((x) => x.id === id); if (task) openTaskDialog(task); },
+    courses: {
+      spaceFor: spaceForCourse,
+      /* One study space per course, tied to it by title. A space that already carries the course's name is tied rather than duplicated. */
+      createSpaces: (titles) => undoable('已为 ' + titles.length + ' 门课建好分区', () => change((s) => {
+        for (const title of titles) {
+          if (s.spaces.some((x) => x.course === title)) continue;
+          const same = s.spaces.find((x) => !x.course && x.name === title.slice(0, 20));
+          if (same) { same.course = title; continue; }
+          let name = title.slice(0, 20);
+          for (let n = 2; s.spaces.some((x) => x.name === name); n++) name = title.slice(0, 18) + ' ' + n;
+          s.spaces.push({ id: C.uid('space'), name, color: C.SPACE_COLORS[s.spaces.length % C.SPACE_COLORS.length], type: 'study', course: title });
+        }
+      })),
+      addTask: (title) => { const sp = spaceForCourse(title); openTaskDialog(null, { title: '', date: today(), time: '', minutes: 30, space: sp ? sp.id : '' }); },
+      addDate: (title) => { const sp = spaceForCourse(title); openDateDialog(null, { title: title + ' 考试', spaceId: sp ? sp.id : null }); },
+      openSpace: (id) => { ui.mode = 'planner'; ui.space = id; render(); },
+    } });
   function render() {
     renderRail();
     renderList();
