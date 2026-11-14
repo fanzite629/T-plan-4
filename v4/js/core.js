@@ -55,6 +55,8 @@
       sessions: [],
       reflections: [],
       metrics: [],
+      dates: [],
+      cards: [],
       messages: [],
       memory: [],
       timer: null,
@@ -73,7 +75,7 @@
     const base = emptyState();
     const s = { ...base, ...raw, version: VERSION };
     s.schedule = Timetable.normalize(raw.schedule);
-    for (const key of ['spaces', 'tasks', 'habits', 'goals', 'sessions', 'reflections', 'metrics', 'messages', 'memory']) if (!Array.isArray(s[key])) s[key] = base[key];
+    for (const key of ['spaces', 'tasks', 'habits', 'goals', 'sessions', 'reflections', 'metrics', 'dates', 'cards', 'messages', 'memory']) if (!Array.isArray(s[key])) s[key] = base[key];
     s.settings = { ...base.settings, ...(isObject(raw.settings) ? raw.settings : {}) };
     s.settings.agent = { ...base.settings.agent, ...(isObject(s.settings.agent) ? s.settings.agent : {}) };
     s.settings.prefs = { ...base.settings.prefs, ...(isObject(s.settings.prefs) ? s.settings.prefs : {}) };
@@ -101,6 +103,19 @@
     for (const g of s.goals) {
       if (!Array.isArray(g.milestones)) g.milestones = [];
       if (!spaceIds.has(g.spaceId)) g.spaceId = null;
+    }
+    s.dates = s.dates.filter((d) => isObject(d) && validDate(d.date) && typeof d.title === 'string' && d.title);
+    for (const d of s.dates) {
+      if (!spaceIds.has(d.spaceId)) d.spaceId = null;
+      if (!validTime(d.time)) delete d.time;
+    }
+    s.cards = s.cards.filter((c) => isObject(c) && typeof c.front === 'string' && c.front);
+    for (const c of s.cards) {
+      if (!spaceIds.has(c.spaceId)) c.spaceId = null;
+      if (typeof c.back !== 'string') c.back = '';
+      if (!validDate(c.due)) c.due = todayISO(new Date(c.createdAt || Date.now()));
+      c.stage = Number.isInteger(c.stage) && c.stage >= 0 ? Math.min(c.stage, CARD_INTERVALS.length) : 0;
+      if (!Array.isArray(c.reviews)) c.reviews = [];
     }
     if (s.timer && !s.tasks.some((t) => t.id === s.timer.taskId)) s.timer = null;
     return s;
@@ -232,6 +247,19 @@
         if (!text) throw new Error('记忆内容为空');
         return { type: 'remember', text };
       }
+      case 'add_date': {
+        const title = cleanText(a.title, 80);
+        if (!title) throw new Error('重要日期缺少名称');
+        if (!validDate(a.date)) throw new Error('重要日期缺少有效的日期');
+        const out = { type: 'add_date', title, date: a.date, place: cleanText(a.place, 40), spaceId: pickSpace(state, a) };
+        if (validTime(a.time)) out.time = a.time;
+        return out;
+      }
+      case 'add_cards': {
+        const cards = (Array.isArray(a.cards) ? a.cards : []).slice(0, MAX_CARDS_PER_ACTION).map((c) => ({ front: cardText(c && c.front, 300), back: cardText(c && c.back, 800) })).filter((c) => c.front && c.back);
+        if (!cards.length) throw new Error('复习卡片需要同时有问题和答案');
+        return { type: 'add_cards', cards, spaceId: pickSpace(state, a) };
+      }
       default:
         throw new Error('不支持的操作类型');
     }
@@ -275,7 +303,66 @@
       s.reflections.push({ id: uid('r'), date: a.date || todayISO(new Date(now)), text: a.text, at: now, source: origin });
     } else if (a.type === 'remember') {
       addMemory(s, a.text, now, origin);
+    } else if (a.type === 'add_date') {
+      s.dates.push({ id: uid('d'), title: a.title, date: a.date, ...(a.time ? { time: a.time } : {}), place: a.place || '', spaceId: a.spaceId, createdAt: now });
+    } else if (a.type === 'add_cards') {
+      for (const c of a.cards) s.cards.push(newCard(c, a.spaceId, now, origin));
     }
+  }
+
+  /* ---------- key dates: exams and deadlines, counted down ---------- */
+  const dayNumber = (date) => Math.round(new Date(date + 'T12:00:00').getTime() / 86400000);
+  const daysBetween = (from, to) => dayNumber(to) - dayNumber(from);
+  /* Exams, deadlines and goal deadlines from today on, nearest first. `spaceId` undefined means everything. */
+  function upcomingDates(state, today, spaceId) {
+    const mine = (x) => spaceId === undefined || (x.spaceId || null) === spaceId;
+    return [
+      ...state.dates.filter((d) => d.date >= today && mine(d)).map((d) => ({ id: d.id, kind: 'date', title: d.title, date: d.date, time: d.time || null, place: d.place || '', spaceId: d.spaceId || null })),
+      ...state.goals.filter((g) => g.deadline && g.deadline >= today && mine(g)).map((g) => ({ id: g.id, kind: 'goal', title: g.title, date: g.deadline, time: null, place: '', spaceId: g.spaceId || null })),
+    ].map((x) => ({ ...x, daysLeft: daysBetween(today, x.date) })).sort((a, b) => a.date.localeCompare(b.date) || (a.time || '').localeCompare(b.time || ''));
+  }
+
+  /* ---------- review cards ----------
+     One question, one answer. A remembered card comes back after 1, 2, 4, 7, 15, then 30 days; a
+     forgotten one starts over tomorrow. Every answer is kept as a dated observation, so "has this
+     been learned" rests on what the user actually recalled, not on time spent. */
+  const CARD_INTERVALS = [1, 2, 4, 7, 15, 30];
+  const MAX_CARDS_PER_ACTION = 30;
+  const MAX_REVIEWS_KEPT = 40;
+  const cardText = (value, max) => (typeof value === 'string' ? value.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim().slice(0, max) : '');
+  function newCard(fields, spaceId, now, origin) {
+    return { id: uid('c'), front: cardText(fields.front, 300), back: cardText(fields.back, 800), spaceId: spaceId || null, createdAt: now, origin, stage: 0, due: todayISO(new Date(now)), reviews: [] };
+  }
+  function dueCards(state, today, spaceId) {
+    return state.cards.filter((c) => c.due <= today && (spaceId === undefined || spaceId === null || c.spaceId === spaceId)).sort((a, b) => a.due.localeCompare(b.due) || a.createdAt - b.createdAt);
+  }
+  /* Records one answer and schedules the next showing. Returns a new state. */
+  function reviewCard(state, cardId, remembered, now) {
+    const s = clone(state);
+    const card = s.cards.find((c) => c.id === cardId);
+    if (!card) throw new Error('这张卡片已不存在');
+    const today = todayISO(new Date(now));
+    card.reviews.push({ at: now, date: today, ok: !!remembered, stage: card.stage });
+    if (card.reviews.length > MAX_REVIEWS_KEPT) card.reviews = card.reviews.slice(-MAX_REVIEWS_KEPT);
+    if (remembered) {
+      card.due = addDays(today, CARD_INTERVALS[Math.min(card.stage, CARD_INTERVALS.length - 1)]);
+      card.stage = Math.min(card.stage + 1, CARD_INTERVALS.length);
+    } else {
+      card.stage = 0;
+      card.due = addDays(today, 1);
+    }
+    return s;
+  }
+  /* Facts about the cards, for the list header and the assistant. Recall is counted over the last 14 days. */
+  function cardStats(state, today, spaceId) {
+    const cards = state.cards.filter((c) => spaceId === undefined || spaceId === null || c.spaceId === spaceId);
+    const since = addDays(today, -13);
+    const recent = cards.flatMap((c) => c.reviews).filter((r) => r.date >= since);
+    return {
+      total: cards.length, dueToday: cards.filter((c) => c.due <= today).length, neverReviewed: cards.filter((c) => !c.reviews.length).length,
+      steady: cards.filter((c) => c.stage >= 4).length, // remembered four times running: now a week or more apart
+      recentAnswers: recent.length, recentRemembered: recent.filter((r) => r.ok).length,
+    };
   }
 
   /* One number per day for a named measurement (weight, sleep hours...). A second value on the same day replaces the first. */
@@ -561,6 +648,8 @@
       })),
       habits: state.habits.map((h) => ({ title: h.title, targetPerWeek: h.perWeek, doneThisWeek: habitWeekCount(h, today), doneToday: !!h.log[today] })),
       recentReflections: state.reflections.slice(-5).map((r) => ({ date: r.date, text: r.text.slice(0, 600) })),
+      keyDates: upcomingDates(state, today).slice(0, 12).map((d) => ({ title: d.title, date: d.date, ...(d.time ? { time: d.time } : {}), daysLeft: d.daysLeft, kind: d.kind === 'goal' ? 'goalDeadline' : 'examOrDeadline', space: spaceName(d.spaceId) })),
+      ...(state.cards.length ? { reviewCards: { ...cardStats(state, today), bySpace: state.spaces.map((x) => ({ space: x.name, ...cardStats(state, today, x.id) })).filter((x) => x.total).map((x) => ({ space: x.space, total: x.total, dueToday: x.dueToday })) } } : {}),
       timerRunning: !!state.timer,
       history: state.messages.filter((m) => thread === undefined || (m.spaceId || null) === thread).slice(-12).map((m) => ({ role: m.role, text: m.text.slice(0, 1500) })),
       message: text,
@@ -655,7 +744,7 @@
 
   return {
     VERSION, SPACE_COLORS, SPACE_TYPES, logMetric,
-    clone, uid, todayISO, validDate, validTime, editTaskSteps, toggleTask, addDays, weekStart,
+    clone, uid, todayISO, validDate, validTime, CARD_INTERVALS, newCard, dueCards, reviewCard, cardStats, upcomingDates, daysBetween, editTaskSteps, toggleTask, addDays, weekStart,
     emptyState, normalize, validateActions, resolveProposal, editProposal, addMemory,
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,
     buildProfile, buildContext, history, parseLine, splitIntoSteps, localReply,

@@ -390,3 +390,63 @@ test('the agent stops between steps when asked, and offers no path tools', async
   await assert.rejects(run, { name: 'AbortError' });
   assert.equal(calls, 1);
 });
+
+test('exams, deadlines and goal deadlines are counted down, nearest first', () => {
+  const s = C.emptyState();
+  const checked = C.validateActions(s, [
+    { type: 'add_date', title: '操作系统期末考试', date: '2026-11-19', time: '09:00', place: 'A204', space: '学习' },
+    { type: 'add_date', title: '没有日期', date: 'soon' },
+    { type: 'add_date', title: '', date: '2026-11-19' },
+  ]);
+  assert.equal(checked.actions.length, 1);
+  assert.equal(checked.rejected.length, 2);
+  s.messages.push({ id: 'm', role: 'assistant', text: '', proposal: { status: 'pending', source: 'ai', actions: checked.actions } });
+  const next = C.resolveProposal(s, 'm', true, 1);
+  assert.deepEqual([next.dates[0].title, next.dates[0].time, next.dates[0].spaceId], ['操作系统期末考试', '09:00', 'space_1']);
+  next.dates.push({ id: 'old', title: '已经过去', date: '2026-11-01' }, { id: 'far', title: '六级', date: '2026-12-12' });
+  next.goals.push({ id: 'g', title: '学完单片机', deadline: '2026-11-30', milestones: [] });
+  assert.deepEqual(C.upcomingDates(next, TODAY).map((d) => [d.title, d.daysLeft, d.kind]), [['操作系统期末考试', 5, 'date'], ['学完单片机', 16, 'goal'], ['六级', 28, 'date']]);
+  assert.deepEqual(C.upcomingDates(next, TODAY, 'space_1').map((d) => d.title), ['操作系统期末考试']);
+  assert.equal(C.buildContext(next, TODAY, 'hi').keyDates[0].daysLeft, 5);
+  // A date without a title or a valid day does not survive loading.
+  const raw = C.clone(next); raw.dates.push({ id: 'bad', title: 'x', date: 'nope' });
+  assert.equal(C.normalize(raw).dates.length, 3);
+});
+
+test('a remembered card moves out along the intervals; a forgotten one starts over tomorrow', () => {
+  const at = (date) => new Date(date + 'T10:00:00').getTime();
+  let s = C.emptyState();
+  s.cards.push(C.newCard({ front: '进程和线程的区别？', back: '资源分配单位 / 调度单位' }, 'space_1', at(TODAY), 'user'));
+  const id = s.cards[0].id;
+  assert.deepEqual([s.cards[0].due, s.cards[0].stage], [TODAY, 0]);
+  assert.equal(C.dueCards(s, TODAY).length, 1);
+  const seen = [];
+  let day = TODAY;
+  for (let i = 0; i < 7; i++) { s = C.reviewCard(s, id, true, at(day)); day = s.cards[0].due; seen.push(C.daysBetween(TODAY, day)); }
+  assert.deepEqual(seen, [1, 3, 7, 14, 29, 59, 89]); // gaps of 1, 2, 4, 7, 15, 30, then 30 again
+  assert.equal(s.cards[0].stage, C.CARD_INTERVALS.length);
+  s = C.reviewCard(s, id, false, at(day));
+  assert.deepEqual([s.cards[0].stage, s.cards[0].due], [0, C.addDays(day, 1)]);
+  assert.deepEqual(s.cards[0].reviews.map((r) => r.ok), [true, true, true, true, true, true, true, false]);
+  assert.equal(C.dueCards(s, day, 'space_1').length, 0);
+  assert.equal(C.dueCards(s, C.addDays(day, 1), 'space_2').length, 0);
+  assert.equal(C.dueCards(s, C.addDays(day, 1), 'space_1').length, 1);
+  const stats = C.cardStats(s, day);
+  assert.deepEqual([stats.total, stats.recentAnswers, stats.recentRemembered], [1, 1, 0]); // only the last answer falls in the 14 days before `day`
+  assert.throws(() => C.reviewCard(s, 'missing', true, 1), /已不存在/);
+});
+
+test('the assistant can propose cards, which need both a question and an answer', () => {
+  const s = C.emptyState();
+  const checked = C.validateActions(s, [
+    { type: 'add_cards', space: '学习', cards: [{ front: 'FCFS 是什么？', back: '先来先服务' }, { front: '只有问题', back: '' }, 'nope'] },
+    { type: 'add_cards', cards: [] },
+  ]);
+  assert.deepEqual(checked.actions, [{ type: 'add_cards', cards: [{ front: 'FCFS 是什么？', back: '先来先服务' }], spaceId: 'space_1' }]);
+  assert.equal(checked.rejected.length, 1);
+  s.messages.push({ id: 'm', role: 'assistant', text: '', proposal: { status: 'pending', source: 'ai', actions: checked.actions } });
+  const next = C.resolveProposal(s, 'm', true, new Date(TODAY + 'T09:00:00').getTime());
+  assert.deepEqual([next.cards.length, next.cards[0].due, next.cards[0].origin, next.cards[0].spaceId], [1, TODAY, 'ai', 'space_1']);
+  assert.equal(C.buildContext(next, TODAY, 'hi').reviewCards.dueToday, 1);
+  assert.equal(C.buildContext(C.emptyState(), TODAY, 'hi').reviewCards, undefined);
+});

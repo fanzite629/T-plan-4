@@ -36,6 +36,8 @@
     '  {"type":"complete_task","taskId":""}  {"type":"delete_task","taskId":""}',
     '  {"type":"add_habit","title":"","perWeek":3,"space":""}',
     '  {"type":"add_goal","title":"","deadline":"YYYY-MM-DD 或 null","space":"","milestones":[{"title":"第 1 周：……","due":"YYYY-MM-DD","tasks":[{"title":"","date":"","minutes":60,"steps":[]}]}]}',
+    '  {"type":"add_date","title":"操作系统期末考试","date":"YYYY-MM-DD","time":"HH:MM 或 null","place":"","space":""}（考试、报名截止、作业截止这类到某一天为止的事，界面会显示倒计时；date 必须是用户给出的确切日期，不知道就先问，不要估计。输入里的 keyDates 是已有的考试、截止日期和目标期限，不要重复添加）',
+    '  {"type":"add_cards","space":"","cards":[{"front":"问题","back":"答案"}]}（复习卡片，一次最多 30 张。用户要求出题、做卡片、把笔记或课件变成复习题时使用。每张只考一个知识点，问题要具体，答案简短而完整；内容必须来自用户给的材料或用户说过的话，材料里没有的不要编。输入里的 reviewCards 是已有卡片的数量、今天到期的数量和最近 14 天的回答情况）',
     'options：2 到 4 个用户可以直接点击的简短回答（每个不超过 20 个字）。需要用户做选择或补充信息时，一定给出 options，让用户点击而不是打字。',
     '  {"type":"log_metric","name":"体重","value":72.5,"unit":"kg","date":"YYYY-MM-DD 或 null"}（记录一个随时间变化的数字，例如体重、睡眠小时数；输入里的 metrics 是已有的记录项和最新数值）',
     '  {"type":"add_reflection","text":"","date":"YYYY-MM-DD 或 null"}（把用户的反思、复盘、日记记录下来）',
@@ -55,6 +57,7 @@
     '有图片时：先认真看图。如果是手写或拍照的笔记、反思、日记，把文字原样抄录出来，用 add_reflection 记录：保留原来的换行和用词，不要润色、不要补充、不要总结代替原文；看不清的字写成 [?]。在 reply 里用一两句话说你读到了什么，再按用户这次的要求处理（例如根据反思调整明天的安排）。如果图片是课件、题目、课表或待办清单，就当作资料来读，照常做计划。看不到图片或图片里没有文字时直接说明。',
     '信息不够时（不知道截止日期、每天有多少时间、基础如何），用 options 问一个问题，或者用 questions 一次问清楚两三件事。不要让用户打字回答可以点选的问题。',
     '',
+    '安排学习时参考 keyDates：离考试或截止越近的科目越优先，并在 reply 里说明还剩几天。reviewCards.dueToday 大于 0 时可以提醒用户今天有卡片要复习，但不要替用户判断哪些已经掌握；recentRemembered 除以 recentAnswers 是最近的回忆正确率，只在 recentAnswers 不少于 10 时才引用。',
     '【规则】taskId 只能用 openTasks 里给出的。日期不确定用 null。不要编造用户做过或没做过的事，没有记录就说没有记录。不要从用时推断学习效果。',
   ].join('\n');
 

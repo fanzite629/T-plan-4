@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const T = window.TPlanTimetable;
-  window.TPlanTimetableUI = function ({ getState, commit, toast, h, openWorkspace, openTask = () => {}, undoable = (label, apply) => apply() }) {
+  window.TPlanTimetableUI = function ({ getState, commit, toast, h, openWorkspace, openTask = () => {}, undoable = (label, apply) => apply(), courses: link = null }) {
     let currentWeek = T.weekStart(new Date().toLocaleDateString('sv-SE')), activeDraft = null, jobId = 0;
     const dialog = h('dialog', { class: 'tt-dialog', 'aria-label': '导入课表' });
     const schoolDialog = h('dialog', { class: 'tt-dialog tt-school', 'aria-label': '学期与节次设置' });
@@ -56,12 +56,52 @@
           h('p', {}, [event.room, event.teacher].filter(Boolean).join(' · ') || '未填写教室 / 教师'),
           h('p', { class: 'sub' }, '来源：' + (course.source || '手动填写') + (course.weeks ? ' · 第 ' + course.weeks + ' 周' : '')),
           h('details', {}, h('summary', {}, '查看识别依据'), h('pre', {}, course.evidence || '无原文'))),
-        h('div', { class: 'tt-dialog-foot' }, btn('编辑这条课程规则', () => { activeDraft = { rows: [{ ...course, selected: true }], reports: [], editId: course.id }; showPreview(); }),
+        h('div', { class: 'tt-dialog-foot' }, ...(link ? courseActions(course.title) : []), btn('编辑这条课程规则', () => { activeDraft = { rows: [{ ...course, selected: true }], reports: [], editId: course.id }; showPreview(); }),
           btn('取消这一天的课', () => { if (!confirm('仅取消 ' + event.date + ' 这一次课程？')) return; const s = schedule(); const c = s.courses.find(x => x.id === course.id); c.excludedDates = [...new Set([...(c.excludedDates || []), event.date])]; if (undoable('已取消 ' + event.date + ' 的这次课', () => save(s))) dialog.close(); }, 'ghost'),
           btn('删除这条课程规则', () => { if (!confirm('删除这条规则及它展开的所有课程日期？')) return; const s = schedule(); s.courses = s.courses.filter(x => x.id !== course.id); if (undoable('课程规则已删除', () => save(s))) dialog.close(); }, 'danger')));
       openDialog(dialog);
     }
+    /* What a course leads to: its space, a new task for it, its exam date. */
+    function courseActions(title) {
+      const sp = link.spaceFor(title);
+      return [
+        btn('加任务', () => { dialog.close(); link.addTask(title); }),
+        btn('加考试日期', () => { dialog.close(); link.addDate(title); }),
+        sp ? btn('打开分区「' + sp.name + '」', () => { dialog.close(); link.openSpace(sp.id); }) : btn('为这门课建分区', () => { if (link.createSpaces([title])) dialog.close(); }),
+      ];
+    }
+    function courseTitles() { return [...new Set(schedule().courses.map(c => c.title).filter(Boolean))]; }
+    function coursesDialog() {
+      const titles = courseTitles(), s = schedule(), missing = titles.filter(t => !link.spaceFor(t));
+      dialog.replaceChildren(h('div', { class: 'tt-dialog-head' }, h('h2', {}, '课程与分区'), btn('关闭', () => dialog.close(), 'ghost')),
+        h('div', { class: 'tt-dialog-body' },
+          h('p', { class: 'sub' }, '给一门课建分区后，它的任务、考试日期、复习卡片和对话都放在一起；在分区里和助手说话，新建的内容自动归到这门课。'),
+          titles.length ? h('div', { class: 'tt-course-list' }, ...titles.map(title => {
+            const sp = link.spaceFor(title), rules = s.courses.filter(c => c.title === title);
+            return h('div', { class: 'tt-course-row' },
+              h('div', {}, h('strong', {}, title), h('small', {}, rules.length + ' 条上课规则' + ([...new Set(rules.map(r => r.teacher).filter(Boolean))].length ? ' · ' + [...new Set(rules.map(r => r.teacher).filter(Boolean))].join('、') : ''))),
+              h('div', { class: 'tt-actions' }, btn('加任务', () => { dialog.close(); link.addTask(title); }, 'ghost'), btn('加考试日期', () => { dialog.close(); link.addDate(title); }, 'ghost'),
+                sp ? btn('打开「' + sp.name + '」', () => { dialog.close(); link.openSpace(sp.id); }) : btn('建分区', () => { if (link.createSpaces([title])) coursesDialog(); })));
+          })) : h('p', { class: 'sub' }, '还没有课程。先导入课表或手动添加。')),
+        h('div', { class: 'tt-dialog-foot' }, missing.length ? btn('为还没有分区的 ' + missing.length + ' 门课都建分区', () => { if (link.createSpaces(missing)) coursesDialog(); }, 'dark') : h('span', { class: 'sub' }, titles.length ? '每门课都有分区了。' : '')));
+      openDialog(dialog);
+    }
+    /* A click on an empty part of a day starts a new course there, snapped to the school's periods when they are set. */
+    function addAt(weekdayNumber, minute) {
+      const s = schedule(), slots = s.settings.periods.filter(p => p.startTime && p.endTime), row = { title: '', weekday: weekdayNumber, weeks: s.settings.weekCount ? '1-' + s.settings.weekCount : '', periods: '', selected: true };
+      const hit = slots.find(p => T.minutes(p.startTime) <= minute && minute < T.minutes(p.endTime)) || slots.filter(p => T.minutes(p.startTime) > minute)[0];
+      if (hit && Math.abs(T.minutes(hit.startTime) - minute) <= 90) {
+        const next = slots.find(p => +p.number === +hit.number + 1);
+        row.periods = next && +hit.number % 2 === 1 ? hit.number + '-' + next.number : String(hit.number);
+      } else {
+        const start = Math.floor(minute / 30) * 30, clock = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+        row.startTime = clock(start); row.endTime = clock(Math.min(1439, start + 90));
+      }
+      activeDraft = { rows: [row], reports: [], manual: true }; showPreview();
+    }
     function render() {
+      const keep = document.querySelector('.tt-grid-scroll'), scrollAt = keep ? [keep.scrollTop, keep.scrollLeft] : null;
+      const now = new Date(), nowMinute = now.getHours() * 60 + now.getMinutes();
       const s = schedule(), end = T.addDays(currentWeek, 6), courses = T.events(s, currentWeek, end);
       // Tasks that have a start time are drawn beside the courses, so the week shows what is really taken.
       const clockText = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
@@ -79,11 +119,15 @@
       const scale = 0.9, height = (endMinute - startMinute) * scale;
       const header = h('div', { class: 'tt-grid-head' }, h('div', { class: 'tt-time-heading' }, '时间'));
       const grid = h('div', { class: 'tt-grid-body', style: '--tt-height:' + height + 'px;--tt-hour:' + 60 * scale + 'px' });
-      grid.append(h('div', { class: 'tt-time-axis' }, Array.from({ length: (endMinute - startMinute) / 60 + 1 }, (_, i) => h('span', { style: 'top:' + i * 60 * scale + 'px' }, String(startMinute / 60 + i).padStart(2, '0') + ':00'))));
+      const slots = s.settings.periods.filter(p => p.startTime && p.endTime && T.minutes(p.startTime) >= startMinute && T.minutes(p.endTime) <= endMinute);
+      grid.append(h('div', { class: 'tt-time-axis' + (slots.length ? ' has-periods' : '') }, Array.from({ length: (endMinute - startMinute) / 60 + 1 }, (_, i) => h('span', { style: 'top:' + i * 60 * scale + 'px' }, String(startMinute / 60 + i).padStart(2, '0') + ':00')),
+        slots.map(p => h('i', { class: 'tt-period', title: '第 ' + p.number + ' 节 ' + p.startTime + '–' + p.endTime, style: 'top:' + (T.minutes(p.startTime) - startMinute) * scale + 'px;height:' + Math.max(14, (T.minutes(p.endTime) - T.minutes(p.startTime)) * scale - 2) + 'px' }, String(p.number)))));
       for (let i = 0; i < 7; i++) {
         const date = T.addDays(currentWeek, i), dayEvents = ev.filter(e => e.date === date);
         header.append(h('div', { class: date === today() ? 'is-today' : '' }, h('strong', {}, T.weekdayNames[i]), h('small', {}, date.slice(5))));
-        const lane = h('div', { class: 'tt-lane' + (date === today() ? ' is-today' : ''), 'aria-label': date + '课程' });
+        const lane = h('div', { class: 'tt-lane' + (date === today() ? ' is-today' : ''), 'aria-label': date + '课程', title: '点空白处在这里加一门课',
+          onclick: e => { if (e.target === lane) addAt(i + 1, startMinute + Math.max(0, e.offsetY) / scale); } });
+        if (date === today() && nowMinute >= startMinute && nowMinute <= endMinute) lane.append(h('div', { class: 'tt-now', style: 'top:' + (nowMinute - startMinute) * scale + 'px', 'aria-hidden': 'true' }));
         const placed = [], groups = []; let group = [], ends = [], until = -1;
         for (const e of dayEvents) {
           const start = T.minutes(e.startTime), end = T.minutes(e.endTime);
@@ -95,19 +139,24 @@
         if (group.length) groups.push({ items: group, columns: ends.length });
         for (const g of groups) for (const { e, col } of g.items) {
           const conflict = dayEvents.some(other => clash(e, other));
-          placed.push(h('button', { class: 'tt-event' + (e.task ? ' task' + (e.task.done ? ' done' : '') : '') + (conflict ? ' conflict' : ''), style: 'top:' + ((T.minutes(e.startTime) - startMinute) * scale) + 'px;height:' + Math.max(25, (T.minutes(e.endTime) - T.minutes(e.startTime)) * scale - 3) + 'px;left:calc(' + col * 100 / g.columns + '% + 3px);width:calc(' + 100 / g.columns + '% - 6px)', onclick: () => e.task ? openTask(e.task.id) : details(e), title: (e.task ? '任务：' : '') + e.title + '\n' + e.startTime + '–' + e.endTime + '\n' + e.room + (conflict ? '\n与其他安排重叠' : '') },
-            h('strong', {}, (e.task ? (e.task.done ? '✓ ' : '任务 · ') : '') + e.title), h('small', {}, e.startTime + '–' + e.endTime), e.room ? h('small', {}, e.room) : null, conflict ? h('small', {}, '时间冲突') : null));
+          const live = !e.task && date === today() && T.minutes(e.startTime) <= nowMinute && nowMinute < T.minutes(e.endTime);
+          placed.push(h('button', { class: 'tt-event' + (e.task ? ' task' + (e.task.done ? ' done' : '') : '') + (conflict ? ' conflict' : '') + (live ? ' live' : ''), style: 'top:' + ((T.minutes(e.startTime) - startMinute) * scale) + 'px;height:' + Math.max(25, (T.minutes(e.endTime) - T.minutes(e.startTime)) * scale - 3) + 'px;left:calc(' + col * 100 / g.columns + '% + 3px);width:calc(' + 100 / g.columns + '% - 6px)', onclick: () => e.task ? openTask(e.task.id) : details(e), title: (e.task ? '任务：' : '') + e.title + '\n' + e.startTime + '–' + e.endTime + '\n' + e.room + (conflict ? '\n与其他安排重叠' : '') },
+            h('strong', {}, (e.task ? (e.task.done ? '✓ ' : '任务 · ') : '') + e.title), h('small', {}, e.startTime + '–' + e.endTime), e.room ? h('small', {}, e.room) : null, live ? h('small', { class: 'tt-live' }, '正在上课') : null, conflict ? h('small', {}, '时间冲突') : null));
         }
         lane.append(...placed); grid.append(lane);
       }
       const last = s.imports.at(-1);
       main.replaceChildren(...[h('header', { class: 'tt-header' }, h('div', {}, h('h2', {}, '课表'), h('p', { class: 'sub' }, '拖入课表，检查后自动填入每一天')),
-        h('div', { class: 'tt-actions' }, btn('学期与节次', () => settings()), btn('手动添加', () => { activeDraft = { rows: [{ title: '', weekday: '', weeks: '', periods: '', selected: true }], reports: [], manual: true }; showPreview(); }), btn('导入课表', () => openImport(), 'dark'))),
+        h('div', { class: 'tt-actions' }, btn('学期与节次', () => settings()), link && s.courses.length ? btn('课程与分区', coursesDialog) : null, btn('手动添加', () => { activeDraft = { rows: [{ title: '', weekday: '', weeks: '', periods: '', selected: true }], reports: [], manual: true }; showPreview(); }), btn('导入课表', () => openImport(), 'dark'))),
         h('div', { class: 'tt-week-nav' }, btn('‹ 上周', () => { currentWeek = T.addDays(currentWeek, -7); render(); }, 'ghost'), h('strong', {}, weekLabel), btn('下周 ›', () => { currentWeek = T.addDays(currentWeek, 7); render(); }, 'ghost'), btn('本周', () => { currentWeek = T.weekStart(today()); render(); }, 'ghost')),
         !s.courses.length ? h('div', { class: 'tt-empty' }, h('strong', {}, '把课表文件拖到这里'), h('p', {}, 'PDF · 截图 · Word（.docx）· Excel（.xlsx）'), h('p', { class: 'sub' }, '先保存学校节次时间；导入后可修正课程、检查周次与冲突。'), btn('选择课表文件', () => openImport())) : null,
         h('div', { class: 'tt-grid-scroll' }, h('div', { class: 'tt-grid' }, header, grid)),
         h('footer', { class: 'tt-footer' }, h('span', {}, '本周 ' + courses.length + ' 次课' + (timed.length ? ' · ' + timed.length + ' 个定了时间的任务' : '') + ' · 已保存 ' + s.courses.length + ' 条课程规则'), last ? btn('撤销最近导入', () => { if (confirm('撤销「' + last.name + '」导入的课程？')) save(T.undo(schedule(), last.id)); }, 'ghost') : null)].filter(Boolean));
+      const grown = document.querySelector('.tt-grid-scroll');
+      if (grown && scrollAt) { grown.scrollTop = scrollAt[0]; grown.scrollLeft = scrollAt[1]; }
     }
+    // Keeps the "now" line and the class in progress current while the page is simply left open.
+    setInterval(() => { if (document.querySelector('.tt-header') && !dialog.open && !schoolDialog.open) render(); }, 60000);
     function openImport(files) {
       jobId++; activeDraft = null;
       const picker = h('input', { type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.webp,.bmp,.docx,.xlsx,.csv,.tsv,.txt', multiple: true, hidden: true, onchange: e => { selected = [...e.target.files]; refresh(); } });
@@ -239,7 +288,10 @@
           } else next = T.applyImport(schedule(), d.rows, [...new Set(d.rows.filter(r => r.selected !== false).map(r => r.source || '手动填写'))].join('、'));
           if (save(next)) {
             const added = p.added[0]; if (added) currentWeek = T.weekStart(added.date);
-            dialog.close(); activeDraft = null; openWorkspace(); toast(d.editId ? '课程已更新' : '课表已填入每天的时间段');
+            dialog.close(); activeDraft = null; openWorkspace();
+            const unlinked = link ? courseTitles().filter(t => !link.spaceFor(t)) : [];
+            if (!d.editId && unlinked.length) toast('课表已填入。有 ' + unlinked.length + ' 门课还没有分区', { label: '去建分区', run: coursesDialog });
+            else toast(d.editId ? '课程已更新' : '课表已填入每天的时间段');
           }
         } catch (e) { toast(e.message); }
       }
