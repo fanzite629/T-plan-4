@@ -1,0 +1,10 @@
+{
+  "name": "t-plan-4",
+  "version": "4.1.0",
+  "private": true,
+  "description": "T计划 v4 — local planner, timetable import and Windows portable desktop source",
+  "scripts": {
+    "test": "node --test v4/core.test.cjs v4/timetable.test.cjs v4-desktop/platform.test.cjs"
+  },
+  "engines": { "node": ">=20" }
+}

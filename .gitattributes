@@ -1,0 +1,16 @@
+* text=auto
+*.md text eol=lf
+*.js text eol=lf
+*.cjs text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.cs text eol=crlf
+*.ps1 text eol=crlf
+*.png binary
+*.ico binary
+
+# Preserve upstream bytes and license hashes.
+v4/vendor/** -text
+desktop/vendor/SDK-*.txt -text
+desktop/vendor/WebView2-Fixed-Runtime-LICENSE.html -text

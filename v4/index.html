@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>T计划</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="timetable.css">
+</head>
+<body>
+<main class="shell" id="shell">
+  <div class="rail-col">
+    <aside class="rail" id="rail" aria-label="分区"></aside>
+    <button class="brand-btn" id="openSettings" aria-label="T计划：打开设置和回看" title="设置和回看">
+      <span class="brand-mark" aria-hidden="true">T</span><span class="brand-name">T计划</span>
+    </button>
+  </div>
+  <div class="list-col">
+    <section class="list" id="list" aria-label="任务"></section>
+    <aside class="dock" id="dock" aria-label="计时" hidden></aside>
+  </div>
+  <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="调整任务栏宽度" tabindex="0" title="拖动调整宽度，双击恢复默认"></div>
+  <section class="main" id="main"></section>
+</main>
+
+<dialog class="panel" id="panel" aria-label="设置"></dialog>
+<dialog class="sheet" id="dialog"></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="js/timetable.js"></script>
+<script src="js/core.js"></script>
+<script src="js/agent.js"></script>
+<script src="js/files.js"></script>
+<script src="js/providers.js"></script>
+<script src="js/platform.js"></script>
+<script src="js/timetable-ui.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
