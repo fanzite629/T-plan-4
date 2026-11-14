@@ -481,3 +481,33 @@ body { padding: 14px; gap: 0; }
 .quick-add { flex: none; margin: 0 0 6px; background: var(--panel); }
 .quick-add:focus, .metric-input:focus { outline: 0; border-color: var(--ink); }
 .list-foot .btn.outline:only-child { flex: 1; }
+
+/* ===== undo toast, task search, stop button, review weeks, editable task steps ===== */
+.toast { display: flex; align-items: center; gap: 12px; }
+.toast[hidden] { display: none; }
+.toast:popover-open { inset: auto auto 32px 50%; margin: 0; border: 0; overflow: visible; }
+.toast-action { flex: none; padding: 4px 12px; border-radius: 999px; background: var(--panel); color: var(--ink); font-weight: 650; }
+.list-search { display: flex; align-items: center; gap: 8px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--t3); }
+.list-search:focus-within { border-color: var(--ink); }
+.list-search .icon { width: 15px; height: 15px; flex: none; }
+.list-search input { flex: 1; min-width: 0; padding: 7px 0; border: 0; background: transparent; color: var(--text); font-size: 14px; outline: 0; }
+.capsule .over { color: var(--bad); font-weight: 650; }
+.send.stop { background: var(--bad); }
+.week-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.week-nav strong { margin: 0 6px; }
+.steps-edit.boxed { padding: 6px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--list); }
+.steps-edit.boxed .step-input { border-color: var(--line); background: var(--panel); }
+.steps-edit.boxed .step-input:focus { border-color: var(--ink); outline: 0; }
+.steps-edit.boxed li.done .step-input { color: var(--t3); text-decoration: line-through; }
+.segmented button { white-space: nowrap; }
+
+/* ----- narrow windows: nothing may be wider than the window ----- */
+@media (max-width: 680px) {
+  .shell > * { min-width: 0; }
+  .rail-col { min-width: 0; }
+  .rail { min-width: 0; flex: 1; }
+  .list-col, .main { min-width: 0; max-width: 100%; }
+  .head-actions .pill span { display: none; }
+}
+.rail { gap: 10px; padding-top: 14px; }
+@media (max-width: 680px) { .shell:not(.timetable-mode) { grid-template-rows: auto minmax(0, 46%) minmax(0, 1fr); } }
