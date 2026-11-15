@@ -450,3 +450,81 @@ test('the assistant can propose cards, which need both a question and an answer'
   assert.equal(C.buildContext(next, TODAY, 'hi').reviewCards.dueToday, 1);
   assert.equal(C.buildContext(C.emptyState(), TODAY, 'hi').reviewCards, undefined);
 });
+
+test('a v3 backup is recognised and converted, and what has no home is reported', () => {
+  const v3 = { app: 'tplan', v: 1, planningVersion: 1,
+    tasks: [{ id: 'a', title: '复习高数', cat: 'math', date: TODAY, est: 45, done: true, doneAt: 1700000000000, pin: true, createdAt: 1, sectionId: 'sec1', next: '从例 5 开始' }, { id: 'b', title: '写报告', date: null, week: '2026-11-11', est: 60 }, { id: 'c', title: '  ' }],
+    sessions: [{ id: 's', date: TODAY, minutes: 30, title: '复习高数', taskId: 'a', start: new Date(TODAY + 'T10:05:00').getTime(), note: '做了例题' }, { id: 'bad', date: 'x', minutes: 5 }],
+    notes: [{ id: 'n', date: TODAY, text: '卡在积分', at: 5 }], trees: [{ id: 't' }], proposals: [{}, {}],
+    settings: { cap: 180, taskSections: [{ id: 'sec1', name: '高等数学' }] },
+    reviewEntries: { 'day:2026-11-13': { reflection: '今天不错', next: '继续' } }, weekPlans: { '2026-11-09': { focus: '期中复习', capacityMin: 900 } } };
+  assert.equal(C.isV3Export(v3), true);
+  assert.equal(C.isV3Export(C.emptyState()), false);
+  assert.equal(C.isV3Export({ tasks: [] }), false);
+  const { state: s, report } = C.convertV3(v3);
+  assert.deepEqual(report, { tasks: 2, sessions: 1, reflections: 2, spaces: 1, weekPlans: 1, skippedTrees: 1, skippedSessions: 1, skippedProposals: 2 });
+  const section = s.spaces.find((x) => x.name === '高等数学');
+  assert.deepEqual(s.tasks.map((t) => [t.title, t.date, t.week, t.minutes, t.done, t.spaceId, t.next]), [['复习高数', TODAY, undefined, 45, true, section.id, '从例 5 开始'], ['写报告', null, '2026-11-09', 60, false, null, undefined]]);
+  assert.deepEqual([s.sessions[0].taskId, s.sessions[0].actual, s.sessions[0].startTime, s.sessions[0].hour, s.sessions[0].manual, s.sessions[0].note], [s.tasks[0].id, 30, '10:05', 10, true, '做了例题']);
+  assert.deepEqual(s.reflections.map((r) => [r.date, r.text]), [['2026-11-13', '今天不错\n\n下次从哪里继续：继续'], [TODAY, '卡在积分']]);
+  assert.deepEqual(s.weekPlans, { '2026-11-09': { focus: '期中复习', capacity: 900 } });
+  assert.equal(s.settings.prefs.dailyMinutes, 180);
+  assert.equal(C.normalize(C.clone(s)).tasks.length, 2); // the result is ordinary v4 data
+});
+
+test('time can be entered by hand and corrected, without counting as evidence of pace', () => {
+  let s = stateWithTask();
+  s = C.addSession(s, { taskId: 't1', date: TODAY, minutes: 40, startTime: '19:30', note: '晚自习' }, 1);
+  assert.deepEqual([s.sessions[0].title, s.sessions[0].actual, s.sessions[0].manual, s.sessions[0].hour, s.sessions[0].spaceId, s.sessions[0].note], ['Read chapter 3', 40, true, 19, 'space_1', '晚自习']);
+  assert.throws(() => C.addSession(s, { date: TODAY, minutes: 10 }, 1), /做了什么/);
+  assert.throws(() => C.addSession(s, { title: 'x', date: TODAY, minutes: 0 }, 1), /1–1440/);
+  assert.throws(() => C.addSession(s, { title: 'x', date: 'nope', minutes: 5 }, 1), /日期/);
+  // Three timer sessions give a pace; hand-entered and corrected ones are left out of it.
+  for (let i = 0; i < 3; i++) s.sessions.push({ id: 'k' + i, taskId: 't1', title: 'Read chapter 3', step: 'x', spaceId: 'space_1', planned: 20, actual: 30, date: TODAY, hour: 9, endedAt: 1, partial: false });
+  assert.equal(C.buildProfile(s, TODAY).actualVsPlanned, 1.5);
+  s = C.updateSession(s, 'k0', { title: 'Read chapter 3', taskId: 't1', date: TODAY, minutes: 60 });
+  assert.deepEqual([s.sessions[1].actual, s.sessions[1].planned, s.sessions[1].edited], [60, 20, true]);
+  assert.equal(C.buildProfile(s, TODAY).actualVsPlanned, undefined); // only two untouched timer sessions remain
+  assert.throws(() => C.updateSession(s, 'gone', { title: 'x', date: TODAY, minutes: 5 }), /已不存在/);
+  // The assistant may log time only with a real number of minutes.
+  const checked = C.validateActions(s, [{ type: 'log_time', title: '复习高数', minutes: 40 }, { type: 'log_time', taskId: 't1', minutes: 25, date: '2026-11-13' }, { type: 'log_time', title: 'x', minutes: 'some' }]);
+  assert.deepEqual(checked.actions.map((a) => [a.title, a.minutes, a.date, a.taskId]), [['复习高数', 40, null, null], ['Read chapter 3', 25, '2026-11-13', 't1']]);
+  assert.equal(checked.rejected.length, 1);
+});
+
+test('a sitting can be written up: what was done stays on the record, where to continue on the task', () => {
+  const start = new Date(TODAY + 'T10:00:00').getTime();
+  let s = C.startTimer(stateWithTask(), 't1', start);
+  s = C.stopTimer(s, start + 6 * MIN);
+  const id = s.sessions[0].id;
+  s = C.wrapUp(s, { taskId: 't1', sessionId: id, did: '看完 3.1 节', stuck: '例 4 没懂', next: '  从例 4 重新看 ' });
+  assert.deepEqual([s.sessions[0].note, s.sessions[0].stuck, s.tasks[0].next], ['看完 3.1 节', '例 4 没懂', '从例 4 重新看']);
+  assert.equal(C.buildContext(s, TODAY, 'hi').openTasks[0].continueFrom, '从例 4 重新看');
+  assert.equal(C.history(s, TODAY, 7).sessions[0].stuck, '例 4 没懂');
+  s = C.wrapUp(s, { taskId: 't1', sessionId: id, did: '', stuck: '', next: '' });
+  assert.deepEqual([s.sessions[0].note, s.sessions[0].stuck, s.tasks[0].next], [undefined, undefined, undefined]);
+});
+
+test('the week: tasks move between days and the undated column, and the totals keep plan and record apart', () => {
+  const monday = C.weekStart(TODAY);
+  let s = stateWithTask();
+  s.tasks[0].time = '09:00';
+  s = C.moveTask(s, 't1', { week: TODAY });
+  assert.deepEqual([s.tasks[0].date, s.tasks[0].week, s.tasks[0].time], [null, monday, undefined]);
+  assert.deepEqual(C.normalize(C.clone(s)).tasks[0].week, monday);
+  let w = C.weekSummary(s, monday);
+  assert.deepEqual([w.scheduled, w.unscheduled, w.planned, w.capacity], [0, 40, 40, null]);
+  s = C.moveTask(s, 't1', { date: '2026-11-12' });
+  assert.deepEqual([s.tasks[0].date, s.tasks[0].week], ['2026-11-12', undefined]);
+  s.settings.prefs.dailyMinutes = 5;
+  s.sessions.push({ id: 's', taskId: 't1', title: 'x', step: 'x', planned: 10, actual: 12, date: '2026-11-12', hour: 9, endedAt: 1, partial: false });
+  w = C.weekSummary(s, monday);
+  assert.deepEqual([w.scheduled, w.recorded, w.capacity, w.capacityIsDefault, w.over], [40, 12, 35, true, 5]);
+  s = C.setWeekPlan(s, monday, { focus: '期中复习\n交报告', capacity: '600' });
+  w = C.weekSummary(s, monday);
+  assert.deepEqual([w.focus, w.capacity, w.capacityIsDefault, w.over], ['期中复习\n交报告', 600, false, 0]);
+  assert.equal(C.setWeekPlan(s, monday, { capacity: null }).weekPlans[monday].capacity, null);
+  assert.throws(() => C.setWeekPlan(s, monday, { capacity: -5 }), /0–10080/);
+  assert.equal(C.buildContext(s, TODAY, 'hi').thisWeek.focus, '期中复习\n交报告');
+  assert.deepEqual([C.moveTask(s, 't1', {}).tasks[0].date, C.moveTask(s, 't1', {}).tasks[0].week], [null, undefined]);
+});
