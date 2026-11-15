@@ -528,3 +528,32 @@ test('the week: tasks move between days and the undated column, and the totals k
   assert.equal(C.buildContext(s, TODAY, 'hi').thisWeek.focus, '期中复习\n交报告');
   assert.deepEqual([C.moveTask(s, 't1', {}).tasks[0].date, C.moveTask(s, 't1', {}).tasks[0].week], [null, undefined]);
 });
+
+test('dates and times are read the way they are written, and nothing is guessed', () => {
+  const when = (text) => { const r = C.parseWhen(text, TODAY); return [r.date, r.time, r.minutes]; }; // TODAY is Saturday 2026-11-14
+  assert.deepEqual(when('明天下午3点'), ['2026-11-15', '15:00', null]);
+  assert.deepEqual(when('下周一'), ['2026-11-16', null, null]);
+  assert.deepEqual(when('下下周三 9:15'), ['2026-11-25', '09:15', null]);
+  assert.deepEqual(when('11/20 19:00'), ['2026-11-20', '19:00', null]);
+  assert.deepEqual(when('三天后'), ['2026-11-17', null, null]);
+  assert.deepEqual(when('两周后'), ['2026-11-28', null, null]);
+  assert.deepEqual(when('一个月后'), ['2026-12-14', null, null]);
+  assert.deepEqual(when('今晚八点'), [TODAY, '20:00', null]);
+  assert.deepEqual(when('明早7点'), ['2026-11-15', '07:00', null]);
+  assert.deepEqual(when('后天上午10点半 40分钟'), ['2026-11-16', '10:30', 40]);
+  assert.deepEqual(when('2026-12-25 下午两点一刻'), ['2026-12-25', '14:15', null]);
+  assert.deepEqual(when('周末'), [TODAY, null, null]);
+  assert.deepEqual(when('昨天 50分钟'), ['2026-11-13', null, 50]);
+  assert.deepEqual(when('一个半小时'), [null, null, 90]);
+  assert.deepEqual(when('2小时30分'), [null, null, 150]);
+  // A bare "3点" in a plan is the afternoon; a written "3:00" is kept. A time alone means today.
+  assert.deepEqual(when('3点'), [TODAY, '15:00', null]);
+  assert.deepEqual(when('3:00'), [TODAY, '03:00', null]);
+  assert.deepEqual(when('晚上12点'), ['2026-11-15', '00:00', null]);
+  // Nothing recognisable gives nothing; a period of the day without a clock time is not turned into one.
+  assert.deepEqual([C.parseWhen('看书', TODAY).understood, C.parseWhen('25点', TODAY).understood], [false, false]);
+  assert.deepEqual(when('明天上午'), ['2026-11-15', null, null]);
+  // Numbers that belong to the title are left in it.
+  assert.deepEqual(C.parseLine('做第2题', TODAY), { type: 'add_task', title: '做第2题', date: null, minutes: 30, space: null });
+  assert.deepEqual(C.parseLine('复习第3章 明天下午3点 1.5小时', TODAY), { type: 'add_task', title: '复习第3章', date: '2026-11-15', time: '15:00', minutes: 90, space: null });
+});

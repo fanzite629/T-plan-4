@@ -832,42 +832,92 @@
 
   /* ---------- offline fallback ---------- */
   const WEEKDAYS = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 0, 天: 0 };
-  function parseLine(line, today) {
-    let title = line;
+  /* Reads a date, a start time and a length out of a line the way people write them
+     ("明天下午3点半 40分钟", "下周一", "11/20 19:00", "三天后", "今晚八点"). Only what is written is
+     returned; nothing is guessed. `rest` is the line with those parts taken out. */
+  const CN_DIGITS = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  function cnNumber(text) {
+    if (/^\d+(\.\d+)?$/.test(text)) return Number(text);
+    if (text === '半') return 0.5;
+    const m = text.match(/^([一二两三四五六七八九])?(十)?([一二两三四五六七八九])?$/);
+    if (!m || !text) return NaN;
+    return m[2] ? (m[1] ? CN_DIGITS[m[1]] : 1) * 10 + (m[3] ? CN_DIGITS[m[3]] : 0) : m[1] && !m[3] ? CN_DIGITS[m[1]] : NaN;
+  }
+  const NUM = '(\\d+(?:\\.\\d+)?|[一二两三四五六七八九十]{1,3})';
+  function readWhen(line, today) {
+    let rest = String(line);
     let date = null;
-    let minutes = 30;
     let time = null;
+    let minutes = null;
+    let evening = false; // 今晚 / 明晚 say "evening" without a clock time
+    let morning = false;
     const take = (re, fn) => {
-      const m = title.match(re);
-      if (m) { fn(m); title = title.replace(m[0], ' '); }
+      const m = rest.match(re);
+      if (!m || fn(m) === false) return false;
+      rest = rest.replace(m[0], ' ');
+      return true;
     };
-    take(/(\d{4}-\d{2}-\d{2})/, (m) => { if (validDate(m[1])) date = m[1]; });
-    take(/(\d{1,2})月(\d{1,2})[日号]/, (m) => {
-      const year = Number(today.slice(0, 4));
-      let d = year + '-' + pad(+m[1]) + '-' + pad(+m[2]);
-      if (validDate(d) && d < today) d = year + 1 + d.slice(4);
-      if (validDate(d)) date = d;
-    });
-    take(/(下)?(?:周|星期)([一二三四五六日天])/, (m) => {
-      let d = addDays(weekStart(today), ((WEEKDAYS[m[2]] + 6) % 7) + (m[1] ? 7 : 0));
+    const year = Number(today.slice(0, 4));
+    const monthDay = (month, day) => {
+      let d = year + '-' + pad(+month) + '-' + pad(+day);
+      if (!validDate(d)) return false;
+      if (d < today) d = year + 1 + d.slice(4);
+      if (!validDate(d)) return false;
+      date = d;
+    };
+    take(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})[日号]?/, (m) => { const d = m[1] + '-' + pad(+m[2]) + '-' + pad(+m[3]); if (!validDate(d)) return false; date = d; });
+    if (!date) take(/(\d{1,2})月(\d{1,2})[日号]?/, (m) => monthDay(m[1], m[2]));
+    if (!date) take(/(?<![\d.:：])(\d{1,2})\/(\d{1,2})(?![\d/])/, (m) => monthDay(m[1], m[2]));
+    if (!date) take(/(下下|下个?|本|这个?)?(?:周|星期|礼拜)([一二三四五六日天末])/, (m) => {
+      const index = m[2] === '末' ? 5 : (WEEKDAYS[m[2]] + 6) % 7;
+      const weeks = /下下/.test(m[1] || '') ? 2 : /下/.test(m[1] || '') ? 1 : 0;
+      let d = addDays(weekStart(today), index + weeks * 7);
       if (!m[1] && d < today) d = addDays(d, 7);
       date = d;
     });
-    take(/今天|明天|后天/, (m) => { date = addDays(today, { 今天: 0, 明天: 1, 后天: 2 }[m[0]]); });
-    // A clock time needs 点 or a colon, so "2小时" and "30分钟" below are never read as one.
-    take(/(凌晨|早上|上午|中午|下午|傍晚|晚上)?\s*(\d{1,2})(?:点(半|[0-5]?\d分?)?|[:：]([0-5]\d))/, (m) => {
-      let hour = +m[2];
-      const minute = m[3] === '半' ? 30 : m[3] ? parseInt(m[3], 10) : m[4] ? +m[4] : 0;
-      if (/下午|傍晚|晚上/.test(m[1] || '') && hour < 12) hour += 12;
-      if (m[1] === '中午' && hour < 11) hour += 12;
-      const value = pad(hour) + ':' + pad(minute);
-      if (validTime(value)) time = value;
+    if (!date) take(/大后天|后天|明天|明早|明晚|今天|今早|今晚|昨天|昨晚|前天/, (m) => {
+      date = addDays(today, { 大后天: 3, 后天: 2, 明天: 1, 明早: 1, 明晚: 1, 今天: 0, 今早: 0, 今晚: 0, 昨天: -1, 昨晚: -1, 前天: -2 }[m[0]]);
+      evening = /晚/.test(m[0]); morning = /早/.test(m[0]);
     });
-    take(/(\d+(?:\.\d+)?)\s*(?:个)?(?:小时|h\b)/i, (m) => { minutes = cleanMinutes(Number(m[1]) * 60, 30); });
-    take(/(\d+)\s*(?:分钟|min\b|m\b)/i, (m) => { minutes = cleanMinutes(m[1], 30); });
-    title = cleanText(title.replace(/^[\s\-•·\d.、)]+/, '').replace(/[，,。；;]+$/, ''), 150);
+    if (!date) take(new RegExp(NUM + '\\s*(天|周|个?星期|个?礼拜|个月)\\s*(?:之)?后'), (m) => {
+      const n = cnNumber(m[1]);
+      if (!Number.isInteger(n) || n < 1 || n > 366) return false;
+      if (m[2] === '个月') { const d = new Date(today + 'T12:00:00'); d.setMonth(d.getMonth() + n); date = iso(d); } else date = addDays(today, m[2] === '天' ? n : n * 7);
+    });
+    if (!date) take(/下个?(?:周|星期|礼拜)/, () => { date = addDays(weekStart(today), 7); });
+    // A clock time needs 点 or a colon, so "2小时" and "30分钟" below are never read as one.
+    take(new RegExp('(凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里)?\\s*(?:(\\d{1,2})[:：]([0-5]\\d)|' + NUM + '\\s*点(半|一刻|三刻|[0-5]?\\d分?)?)'), (m) => {
+      const period = m[1] || (evening ? '晚上' : morning ? '早上' : '');
+      let hour = m[2] !== undefined ? +m[2] : cnNumber(m[4]);
+      if (!Number.isInteger(hour) || hour > 24) return false;
+      const minute = m[3] !== undefined ? +m[3] : m[5] === '半' ? 30 : m[5] === '一刻' ? 15 : m[5] === '三刻' ? 45 : m[5] ? parseInt(m[5], 10) : 0;
+      if (/下午|傍晚|晚上|夜里/.test(period) && hour < 12) hour += 12;
+      else if (period === '中午' && hour < 11) hour += 12;
+      else if (!period && m[2] === undefined && hour >= 1 && hour <= 6) hour += 12; // a bare "3点" in a plan means the afternoon; "3:00" is taken as written
+      const midnight = /晚上|夜里/.test(period) && hour === 12; // "晚上12点" is the start of the next day
+      const value = pad(midnight ? 0 : hour % 24) + ':' + pad(minute);
+      if (!validTime(value)) return false;
+      time = value;
+      if (midnight) date = addDays(date || today, 1);
+    });
+    const fit = (n) => (Number.isFinite(n) && Math.round(n) >= 1 && Math.round(n) <= 1440 ? Math.round(n) : null);
+    take(new RegExp(NUM + '\\s*个半\\s*(?:小时|钟头)'), (m) => { minutes = fit((cnNumber(m[1]) + 0.5) * 60); return minutes !== null; })
+      || take(new RegExp(NUM + '\\s*(?:个)?\\s*(?:小时|钟头|h\\b|hr\\b|hrs\\b)\\s*(?:' + NUM + '\\s*(?:分钟|分|min\\b|m\\b))?', 'i'), (m) => { minutes = fit(cnNumber(m[1]) * 60 + (m[2] ? cnNumber(m[2]) : 0)); return minutes !== null; })
+      || take(/半\s*(?:个)?\s*(?:小时|钟头)/, () => { minutes = 30; })
+      || take(new RegExp(NUM + '\\s*(?:分钟|min\\b|mins\\b|m\\b)', 'i'), (m) => { minutes = fit(cnNumber(m[1])); return minutes !== null; });
+    return { date, time, minutes, rest };
+  }
+  /* For a date-and-time box: the date and time written in `text`, or nulls. A time without a date means today. */
+  function parseWhen(text, today) {
+    const r = readWhen(text, today);
+    return { date: r.date || (r.time ? today : null), time: r.time, minutes: r.minutes, understood: !!(r.date || r.time || r.minutes) };
+  }
+  function parseLine(line, today) {
+    const r = readWhen(line, today);
+    const title = cleanText(r.rest.replace(/^[\s\-•·\d.、)]+/, '').replace(/[，,。；;]+$/, ''), 150);
     if (!title) return null;
-    return time ? { type: 'add_task', title, date: date || today, time, minutes, space: null } : { type: 'add_task', title, date, minutes, space: null };
+    const minutes = r.minutes || 30;
+    return r.time ? { type: 'add_task', title, date: r.date || today, time: r.time, minutes, space: null } : { type: 'add_task', title, date: r.date, minutes, space: null };
   }
 
   /* Evenly sized segments for one sitting, used when no model is connected. */
@@ -911,6 +961,6 @@
     clone, uid, todayISO, validDate, validTime, addSession, updateSession, wrapUp, moveTask, setWeekPlan, weekSummary, isV3Export, convertV3, CARD_INTERVALS, newCard, dueCards, reviewCard, cardStats, upcomingDates, daysBetween, editTaskSteps, toggleTask, addDays, weekStart,
     emptyState, normalize, validateActions, resolveProposal, editProposal, addMemory,
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,
-    buildProfile, buildContext, history, parseLine, splitIntoSteps, localReply,
+    buildProfile, buildContext, history, parseLine, parseWhen, splitIntoSteps, localReply,
   };
 });

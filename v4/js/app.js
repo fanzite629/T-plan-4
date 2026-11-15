@@ -654,6 +654,7 @@
       h('div', { class: 'row' },
         field('日期', h('input', { name: 'date', type: 'date', required: true, value: item ? item.date : '' })),
         field('时间（可以留空）', h('input', { name: 'time', type: 'time', value: item ? item.time || '' : '' }))),
+      whenHelp(() => form, { kind: 'deadline', time: true }),
       field('地点（可以留空）', h('input', { name: 'place', maxLength: 40, value: item ? item.place || '' : '' })),
       field('分区', spaceSelect(item ? item.spaceId : preset.spaceId !== undefined ? preset.spaceId : ui.space)),
     ], [
@@ -1323,6 +1324,58 @@
   }
 
   /* ---------- dialogs ---------- */
+  /* Quicker ways to fill a date (and a start time): one-click choices, and a box that reads
+     "明天下午3点 40分钟" the way it is written. `form` is looked up when used, as the dialog is built after this. */
+  const DAY_CHIPS = {
+    plan: [['今天', 0], ['明天', 1], ['后天', 2], ['周六', 'sat'], ['下周一', 'mon']],
+    deadline: [['明天', 1], ['下周一', 'mon'], ['一周后', 7], ['两周后', 14], ['一个月后', 'month']],
+    past: [['今天', 0], ['昨天', -1], ['前天', -2]],
+  };
+  function whenHelp(getForm, { kind = 'plan', time = false, minutes = false, optional = false } = {}) {
+    const t = today();
+    const note = h('span', { class: 'when-note sub', role: 'status' });
+    const resolve = (offset) => {
+      if (typeof offset === 'number') return C.addDays(t, offset);
+      if (offset === 'mon') return C.addDays(C.weekStart(t), 7);
+      if (offset === 'month') { const d = new Date(t + 'T12:00:00'); d.setMonth(d.getMonth() + 1); return C.todayISO(d); }
+      const sat = C.addDays(C.weekStart(t), 5); // this week's Saturday, or the next one once it has passed
+      return sat < t ? C.addDays(sat, 7) : sat;
+    };
+    const say = () => { const f = getForm(); note.textContent = (f.date.value ? '已填：' + dateLabel(f.date.value) + (dateLabel(f.date.value).includes('月') ? '' : '（' + plainDate(f.date.value) + '）') : '日期留空') + (time && f.time.value ? ' ' + f.time.value : ''); };
+    const setDate = (value) => { getForm().date.value = value; if (!value && time) getForm().time.value = ''; say(); };
+    const setTime = (value) => { const f = getForm(); f.time.value = value; if (value && !f.date.value) f.date.value = t; say(); };
+    const chip = (label, onclick, title) => h('button', { type: 'button', class: 'when-chip', title: title || '', onclick }, label);
+    const nowRounded = () => { const d = new Date(Date.now() + 4 * 60000); const m = d.getHours() * 60 + Math.floor(d.getMinutes() / 5) * 5; return String(Math.floor(m / 60) % 24).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
+    const read = (box) => {
+      const text = box.value.trim();
+      if (!text) return;
+      const f = getForm();
+      const r = C.parseWhen(text, t);
+      let date = r.date;
+      if (kind === 'past') while (date && date > t) date = C.addDays(date, -7); // "周三" in a record means the one just gone
+      if (!r.understood) { note.textContent = '没有认出日期或时间。可以写「明天下午3点」「下周一」「11/20 19:00」「三天后」。'; return; }
+      if (date) f.date.value = date;
+      if (time && r.time) f.time.value = r.time;
+      if (minutes && r.minutes && f.minutes && !f.minutes.disabled) f.minutes.value = r.minutes;
+      box.value = '';
+      say();
+      if (minutes && r.minutes && f.minutes && !f.minutes.disabled) note.textContent += ' · ' + minutesLabel(r.minutes);
+      if (!time && r.time) note.textContent += '（这里不用填时间，只取了日期）';
+    };
+    return h('div', { class: 'when-help' },
+      h('div', { class: 'when-row' },
+        DAY_CHIPS[kind].map(([label, offset]) => chip(label, () => setDate(resolve(offset)), plainDate(resolve(offset)))),
+        optional ? chip('不定日期', () => setDate(''), '先不排到哪一天') : null,
+        time ? h('span', { class: 'when-sep', 'aria-hidden': 'true' }) : null,
+        time && kind === 'plan' ? chip('现在', () => setTime(nowRounded()), '今天，从现在开始') : null,
+        time ? [['上午 9 点', '09:00'], ['下午 2 点', '14:00'], ['晚上 7 点', '19:00']].map(([label, value]) => chip(label, () => setTime(value))) : null,
+        time ? chip('不定时间', () => setTime(''), '只定日期，不定几点') : null),
+      h('div', { class: 'when-row' },
+        h('input', { class: 'when-quick', maxLength: 60, 'aria-label': '用文字写日期或时间', placeholder: time ? '也可以直接写：明天下午3点' + (minutes ? ' 40分钟' : '') + '，按回车' : '也可以直接写：' + (kind === 'past' ? '昨天、周三、11/12' : '下周一、12月20日、三天后') + '，按回车',
+          onkeydown: (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); read(e.target); } }, onblur: (e) => read(e.target) }),
+        note));
+  }
+
   function openDialog(title, fields, buttons) {
     const dialog = $('#dialog');
     const form = h('form', { method: 'dialog', onsubmit: (e) => e.preventDefault() }, h('h2', {}, title), ...fields, h('div', { class: 'dialog-actions' }, buttons));
@@ -1373,6 +1426,7 @@
         field('日期（可以留空）', h('input', { name: 'date', type: 'date', value: v.date })),
         field('开始时间（可以留空）', h('input', { name: 'time', type: 'time', value: v.time })),
         field('预计分钟', h('input', { name: 'minutes', type: 'number', min: 1, max: 1440, value: v.minutes, disabled: !!(task && task.steps), title: task && task.steps ? '有分段时，总时长是各段之和' : '' }))),
+      whenHelp(() => form, { kind: 'plan', time: true, minutes: true, optional: true }),
       h('p', { class: 'sub' }, '填了开始时间的任务会和课程一起显示在课表的周视图里，并在开始前提醒。'),
       field('分区', h('select', { name: 'space' }, h('option', { value: '' }, '不分区'), state.spaces.map((x) => h('option', { value: x.id, selected: x.id === v.space }, x.name)))),
       field('下次从哪里继续（可以留空，开始计时时会显示）', h('input', { name: 'next', maxLength: 300, value: v.next || '' })),
@@ -1470,6 +1524,7 @@
   function openReflectionDialog(current) {
     const form = openDialog(current ? '修改反思' : '写一条反思', [
       field('日期', h('input', { name: 'date', type: 'date', value: current ? current.date : today() })),
+      whenHelp(() => form, { kind: 'past' }),
       field('内容', h('textarea', { name: 'text', rows: 8, maxLength: 4000, value: current ? current.text : '' })),
     ], [
       current ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这条反思？')) { undoable('反思已删除', () => change((s) => { s.reflections = s.reflections.filter((x) => x.id !== current.id); })); closeDialog(); } } }, '删除') : null,
@@ -1499,6 +1554,7 @@
         field('日期', h('input', { name: 'date', type: 'date', max: today(), value: session ? session.date : preset.date || today() })),
         field('分钟', h('input', { name: 'minutes', type: 'number', min: 1, max: 1440, value: session ? session.actual : 30 })),
         field('开始时间（可以留空）', h('input', { name: 'time', type: 'time', value: session ? session.startTime || '' : '' }))),
+      whenHelp(() => form, { kind: 'past', time: true, minutes: true }),
       field('备注（可以留空）', h('textarea', { name: 'note', rows: 2, maxLength: 600, value: session ? session.note || '' : '' })),
       session && !session.manual ? h('p', { class: 'sub' }, '这是计时产生的记录（计划 ' + session.planned + ' 分钟）。改过之后，它不再用来估计你的实际速度。') : null,
     ], [
