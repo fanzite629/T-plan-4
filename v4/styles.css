@@ -691,3 +691,57 @@ body { padding: 14px; gap: 0; }
 .wk-scroll { padding: 0 24px 20px; }
 .tt-header + .review-scroll { padding: 4px 24px 24px; }
 @media (max-width: 900px) { .wk-scroll { padding: 0 14px 16px; } .tt-header + .review-scroll { padding: 4px 14px 18px; } }
+
+/* ===== charts on the review page =====
+   Series and ramp colours are chart roles, set once here for light and dark; text keeps the app's text colours. */
+.viz { position: relative; --viz-1: #2a78d6; --viz-2: #eb6834; --heat-0: var(--soft); --heat-1: #cde2fb; --heat-2: #86b6ef; --heat-3: #3987e5; --heat-4: #1c5cab; --heat-5: #0d366b; --viz-grid: var(--line); }
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) .viz { --viz-1: #3987e5; --viz-2: #d95926; --heat-1: #104281; --heat-2: #1c5cab; --heat-3: #3987e5; --heat-4: #86b6ef; --heat-5: #cde2fb; }
+}
+.viz-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.05fr); gap: 22px; align-items: start; }
+.viz-block { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.viz-block h4 { font-size: 13px; font-weight: 600; color: var(--t2); }
+.viz-heat { display: flex; gap: 3px; overflow-x: auto; padding-bottom: 2px; }
+.viz-heat-rows, .viz-heat-col { display: grid; grid-template-rows: 14px repeat(7, 14px); gap: 3px; flex: none; }
+.viz-heat-rows { margin-right: 2px; }
+.viz-heat-rows span { grid-row: span 1; font-size: 10.5px; line-height: 14px; color: var(--t3); }
+.viz-heat-month { font-size: 10.5px; line-height: 14px; color: var(--t3); white-space: nowrap; width: 14px; overflow: visible; }
+.viz-cell { display: block; width: 14px; height: 14px; border-radius: 4px; background: var(--heat-0); padding: 0; flex: none; }
+.viz-cell.l1 { background: var(--heat-1); } .viz-cell.l2 { background: var(--heat-2); } .viz-cell.l3 { background: var(--heat-3); } .viz-cell.l4 { background: var(--heat-4); } .viz-cell.l5 { background: var(--heat-5); }
+.viz-cell.future { background: transparent; border: 1px dashed var(--line); }
+.viz-cell.today { box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--ink); }
+button.viz-cell:hover { outline: 2px solid var(--ink); outline-offset: 1px; }
+.viz-scale { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--t2); }
+.viz-weeks { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 2px; height: 150px; border-bottom: 1px solid var(--viz-grid); }
+.viz-week { display: grid; grid-template-rows: 16px minmax(0, 1fr) 16px; justify-items: center; min-width: 0; padding: 0; margin-bottom: -17px; }
+.viz-week-value { font-size: 10.5px; color: var(--t2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.viz-week-track { display: flex; align-items: flex-end; justify-content: center; width: 100%; height: 100%; }
+.viz-week-track i { display: block; width: 62%; max-width: 20px; border-radius: 4px 4px 0 0; background: var(--viz-1); opacity: .55; }
+.viz-week.current .viz-week-track i { opacity: 1; }
+.viz-week:hover .viz-week-track i, .viz-week:focus-visible .viz-week-track i { opacity: 1; }
+.viz-week-label { font-size: 10.5px; line-height: 16px; color: var(--t3); white-space: nowrap; }
+.viz-week.current .viz-week-label { color: var(--text); font-weight: 650; }
+.viz-weeks + .sub { margin-top: 14px; }
+.viz-radar { width: 100%; max-width: 320px; align-self: center; overflow: visible; }
+.viz-ring { fill: none; stroke: var(--viz-grid); stroke-width: 1; }
+.viz-shape { stroke-width: 2; stroke-linejoin: round; }
+.viz-shape.recent { fill: color-mix(in srgb, var(--viz-1) 18%, transparent); stroke: var(--viz-1); }
+.viz-shape.previous { fill: none; stroke: var(--viz-2); stroke-dasharray: 5 4; }
+.viz-dot { stroke: var(--list); stroke-width: 2; }
+.viz-dot.recent { fill: var(--viz-1); } .viz-dot.previous { fill: var(--viz-2); }
+.viz-axis { font-size: 11.5px; fill: var(--t2); }
+.viz-hit { fill: transparent; cursor: default; outline: none; }
+.viz-hit:focus-visible { stroke: var(--ink); stroke-width: 1.5; }
+.viz-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--text); }
+.viz-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.viz-key { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--viz-1); }
+.viz-key.previous { border-top: 2px dashed var(--viz-2); }
+.viz-table summary { cursor: pointer; font-size: 12.5px; color: var(--t2); }
+.viz-table table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.viz-table th, .viz-table td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--line); font-weight: 400; }
+.viz-table th { color: var(--t2); border-top: 0; }
+.viz-tip { position: absolute; z-index: 4; transform: translate(-50%, -100%); display: flex; flex-direction: column; gap: 1px; padding: 7px 10px; border-radius: 10px; background: var(--ink); color: var(--panel); font-size: 12px; line-height: 1.45; white-space: nowrap; pointer-events: none; box-shadow: var(--pop); }
+.viz-tip[hidden] { display: none; }
+@media (max-width: 1100px) { .viz-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .viz-grid .viz-block:first-child { grid-column: 1 / -1; } }
+@media (max-width: 680px) { .viz-grid { grid-template-columns: minmax(0, 1fr); } }
+.review-scroll > * { flex: none; }

@@ -416,6 +416,40 @@
     };
   }
 
+  /* ---------- the longer view: recorded time by day, by week and by space ----------
+     Facts only, read from the time records. `heat` is 20 weeks of days ending with this week,
+     `weeks` the last 12 weekly totals, and `balance` compares where time went in the last four
+     weeks with the four before, one axis per space. */
+  function trajectory(state, today) {
+    const monday = weekStart(today);
+    const perDay = {};
+    for (const x of state.sessions) perDay[x.date] = (perDay[x.date] || 0) + x.actual;
+    const heatStart = addDays(monday, -19 * 7);
+    const heat = Array.from({ length: 140 }, (_, i) => { const date = addDays(heatStart, i); return { date, minutes: date > today ? null : perDay[date] || 0 }; });
+    const weeks = Array.from({ length: 12 }, (_, i) => {
+      const start = addDays(monday, (i - 11) * 7);
+      const days = Array.from({ length: 7 }, (_, d) => perDay[addDays(start, d)] || 0);
+      return { monday: start, minutes: sum(days, (n) => n), activeDays: days.filter((n) => n > 0).length };
+    });
+    const bySpace = (from, to) => {
+      const out = {};
+      for (const x of state.sessions) if (x.date >= from && x.date <= to) { const key = state.spaces.some((sp) => sp.id === x.spaceId) ? x.spaceId : ''; out[key] = (out[key] || 0) + x.actual; }
+      return out;
+    };
+    const recent = bySpace(addDays(today, -27), today);
+    const previous = bySpace(addDays(today, -55), addDays(today, -28));
+    const total = (key) => (recent[key] || 0) + (previous[key] || 0);
+    let keys = [...state.spaces.map((sp) => sp.id), ''].filter((key) => total(key) > 0).sort((a, b) => total(b) - total(a));
+    let other = null;
+    if (keys.length > 7) { other = keys.slice(6); keys = keys.slice(0, 6); } // a radar stays readable up to about seven axes
+    for (const sp of state.spaces) if (keys.length + (other ? 1 : 0) < 3 && !keys.includes(sp.id) && !(other || []).includes(sp.id)) keys.push(sp.id);
+    const name = (key) => (key ? state.spaces.find((sp) => sp.id === key).name : '未分区');
+    const axes = keys.map((key) => ({ id: key || null, name: name(key), recent: recent[key] || 0, previous: previous[key] || 0 }));
+    if (other) axes.push({ id: 'other', name: '其他 ' + other.length + ' 个分区', recent: sum(other, (key) => recent[key] || 0), previous: sum(other, (key) => previous[key] || 0) });
+    return { heat, weeks, balance: axes.length >= 3 ? { axes, recentTotal: sum(axes, (a) => a.recent), previousTotal: sum(axes, (a) => a.previous) } : null,
+      recordedDays: Object.keys(perDay).filter((d) => d >= heatStart && d <= today && perDay[d] > 0).length };
+  }
+
   /* ---------- reading a T计划 v3 export ----------
      v3 kept tasks, time records and notes in other shapes. This maps what has a home in v4 and
      reports what does not, so nothing is dropped silently. */
@@ -958,7 +992,7 @@
 
   return {
     VERSION, SPACE_COLORS, SPACE_TYPES, logMetric,
-    clone, uid, todayISO, validDate, validTime, addSession, updateSession, wrapUp, moveTask, setWeekPlan, weekSummary, isV3Export, convertV3, CARD_INTERVALS, newCard, dueCards, reviewCard, cardStats, upcomingDates, daysBetween, editTaskSteps, toggleTask, addDays, weekStart,
+    clone, uid, todayISO, validDate, validTime, trajectory, addSession, updateSession, wrapUp, moveTask, setWeekPlan, weekSummary, isV3Export, convertV3, CARD_INTERVALS, newCard, dueCards, reviewCard, cardStats, upcomingDates, daysBetween, editTaskSteps, toggleTask, addDays, weekStart,
     emptyState, normalize, validateActions, resolveProposal, editProposal, addMemory,
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,
     buildProfile, buildContext, history, parseLine, parseWhen, splitIntoSteps, localReply,

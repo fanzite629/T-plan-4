@@ -1268,6 +1268,104 @@
     return box;
   }
   let reviewOffset = 0; // 0 is this week, -1 the week before, and so on
+  /* ---------- the longer view on the review page: a calendar of recorded time, weekly totals, and where the time went ---------- */
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  function sv(tag, attrs, ...children) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [key, value] of Object.entries(attrs || {})) if (value != null && value !== false) el.setAttribute(key, value);
+    for (const child of children.flat(Infinity)) if (child != null && child !== false) el.append(child);
+    return el;
+  }
+  function trajectoryCard(goToWeek) {
+    const t = today();
+    const data = C.trajectory(state, t);
+    const root = h('section', { class: 'card viz' });
+    const tip = h('div', { class: 'viz-tip', role: 'status', hidden: true });
+    /* One tooltip for every mark in the card: shown on hover and on keyboard focus. */
+    const hint = (el, lines) => {
+      const show = () => {
+        tip.replaceChildren(...lines.map((line, i) => h(i ? 'span' : 'strong', {}, line)));
+        tip.hidden = false;
+        const box = el.getBoundingClientRect(), home = root.getBoundingClientRect();
+        const left = Math.min(Math.max(box.left + box.width / 2 - home.left, 80), home.width - 80);
+        tip.style.left = left + 'px';
+        tip.style.top = box.top - home.top - 8 + 'px';
+      };
+      el.addEventListener('pointerenter', show); el.addEventListener('focus', show);
+      el.addEventListener('pointerleave', () => { tip.hidden = true; }); el.addEventListener('blur', () => { tip.hidden = true; });
+      return el;
+    };
+    const weekdayOf = (date) => '周' + '日一二三四五六'[new Date(date + 'T12:00:00').getDay()];
+
+    // --- calendar: one cell per day, darker for more recorded time
+    const level = (m) => (m === null ? 'future' : m === 0 ? 0 : m <= 15 ? 1 : m <= 30 ? 2 : m <= 60 ? 3 : m <= 120 ? 4 : 5);
+    const columns = Array.from({ length: 20 }, (_, w) => data.heat.slice(w * 7, w * 7 + 7));
+    const heat = h('div', { class: 'viz-heat', role: 'group', 'aria-label': '最近 20 周每天已记录的时间' },
+      h('div', { class: 'viz-heat-rows', 'aria-hidden': 'true' }, ['', '一', '', '三', '', '五', '', '日'].map((x) => h('span', {}, x))),
+      columns.map((week, w) => h('div', { class: 'viz-heat-col' },
+        h('span', { class: 'viz-heat-month', 'aria-hidden': 'true' }, (w === 0 ? columns[1][0].date.slice(5, 7) === week[0].date.slice(5, 7) : week[0].date.slice(5, 7) !== columns[w - 1][0].date.slice(5, 7)) ? Number(week[0].date.slice(5, 7)) + '月' : ''),
+        week.map((d) => (d.minutes === null ? h('span', { class: 'viz-cell future', 'aria-hidden': 'true' })
+          : hint(h('button', { type: 'button', class: 'viz-cell l' + level(d.minutes) + (d.date === t ? ' today' : ''), 'aria-label': plainDate(d.date) + ' ' + weekdayOf(d.date) + '，' + (d.minutes ? '已记录 ' + minutesLabel(d.minutes) : '没有记录'), onclick: () => goToWeek(d.date) }),
+            [plainDate(d.date) + ' ' + weekdayOf(d.date) + (d.date === t ? '（今天）' : ''), d.minutes ? '已记录 ' + minutesLabel(d.minutes) : '没有记录', '点一下看这一周']))))));
+    const heatLegend = h('div', { class: 'viz-scale' }, h('span', {}, '少'), [['l0', '没有记录'], ['l1', '15 分钟以内'], ['l2', '16–30 分钟'], ['l3', '31–60 分钟'], ['l4', '1–2 小时'], ['l5', '2 小时以上']].map(([cls, label]) => hint(h('i', { class: 'viz-cell ' + cls, tabIndex: 0, 'aria-label': label }), [label])), h('span', {}, '多'));
+
+    // --- weekly totals: twelve columns on one scale
+    const top = Math.max(60, ...data.weeks.map((w) => w.minutes));
+    const peak = data.weeks.reduce((best, w) => (w.minutes > best.minutes ? w : best), data.weeks[0]);
+    const weekly = h('div', { class: 'viz-weeks', role: 'group', 'aria-label': '最近 12 周每周已记录的时间' }, data.weeks.map((w, i) => {
+      const current = i === data.weeks.length - 1;
+      return hint(h('button', { type: 'button', class: 'viz-week' + (current ? ' current' : ''), 'aria-label': plainDate(w.monday) + ' 那一周，已记录 ' + minutesLabel(w.minutes) + '，' + w.activeDays + ' 天有记录', onclick: () => goToWeek(w.monday) },
+        h('span', { class: 'viz-week-value' }, (current || (w === peak && w.minutes)) && w.minutes ? (w.minutes >= 60 ? (Math.round(w.minutes / 6) / 10) + 'h' : w.minutes + 'm') : ''),
+        h('span', { class: 'viz-week-track' }, h('i', { style: 'height:' + ((w.minutes / top) * 100).toFixed(1) + '%' })),
+        h('span', { class: 'viz-week-label' }, current ? '本周' : i % 2 === 1 ? Number(w.monday.slice(5, 7)) + '/' + Number(w.monday.slice(8)) : '')),
+      [plainDate(w.monday) + ' – ' + plainDate(C.addDays(w.monday, 6)) + (current ? '（本周）' : ''), '已记录 ' + minutesLabel(w.minutes), w.activeDays + ' 天有记录', '点一下看这一周']);
+    }));
+
+    // --- balance: the same unit on every axis, the last four weeks over the four before
+    let balance;
+    if (!data.balance) balance = h('p', { class: 'empty' }, '至少有三个分区时，这里会画出时间在各分区之间的分布。');
+    else {
+      const axes = data.balance.axes, n = axes.length, size = 300, cx = size / 2, cy = size / 2 + 4, R = 92;
+      const rawMax = Math.max(30, ...axes.map((a) => Math.max(a.recent, a.previous)));
+      const step = rawMax <= 60 ? 15 : rawMax <= 240 ? 60 : rawMax <= 600 ? 120 : 300;
+      const max = Math.ceil(rawMax / step) * step;
+      const at = (i, value) => { const angle = -Math.PI / 2 + (i / n) * Math.PI * 2, r = (value / max) * R; return [cx + Math.cos(angle) * r, cy + Math.sin(angle) * r]; };
+      const points = (key) => axes.map((a, i) => at(i, a[key]).map((v) => v.toFixed(1)).join(',')).join(' ');
+      const svg = sv('svg', { viewBox: '0 0 ' + size + ' ' + size, class: 'viz-radar', role: 'img', 'aria-label': '各分区已记录时间：最近 4 周与之前 4 周的对比。下面有同样内容的表格。' },
+        [0.25, 0.5, 0.75, 1].map((f) => sv('polygon', { class: 'viz-ring', points: axes.map((_, i) => at(i, max * f).map((v) => v.toFixed(1)).join(',')).join(' ') })),
+        axes.map((_, i) => { const [x, y] = at(i, max); return sv('line', { class: 'viz-ring', x1: cx, y1: cy, x2: x.toFixed(1), y2: y.toFixed(1) }); }),
+        sv('polygon', { class: 'viz-shape previous', points: points('previous') }),
+        sv('polygon', { class: 'viz-shape recent', points: points('recent') }),
+        axes.map((a, i) => { const [x, y] = at(i, a.previous); return sv('circle', { class: 'viz-dot previous', cx: x.toFixed(1), cy: y.toFixed(1), r: 3.5 }); }),
+        axes.map((a, i) => { const [x, y] = at(i, a.recent); return sv('circle', { class: 'viz-dot recent', cx: x.toFixed(1), cy: y.toFixed(1), r: 4.5 }); }),
+        axes.map((a, i) => {
+          const [x, y] = at(i, max * 1.2);
+          const label = sv('text', { class: 'viz-axis', x: x.toFixed(1), y: y.toFixed(1), 'text-anchor': Math.abs(x - cx) < 12 ? 'middle' : x > cx ? 'start' : 'end', 'dominant-baseline': 'middle' });
+          label.textContent = a.name.length > 7 ? a.name.slice(0, 6) + '…' : a.name;
+          return label;
+        }),
+        // Hit areas larger than the dots, one per axis, carrying both values.
+        axes.map((a, i) => { const [x, y] = at(i, Math.max(a.recent, a.previous, max * 0.12)); return hint(sv('circle', { class: 'viz-hit', cx: x.toFixed(1), cy: y.toFixed(1), r: 16, tabindex: 0, role: 'img', 'aria-label': a.name + '：最近 4 周 ' + minutesLabel(a.recent) + '，之前 4 周 ' + minutesLabel(a.previous) }),
+          [a.name, '最近 4 周 ' + minutesLabel(a.recent), '之前 4 周 ' + minutesLabel(a.previous)]); }));
+      balance = [
+        h('div', { class: 'viz-legend' }, h('span', {}, h('i', { class: 'viz-key recent' }), '最近 4 周 · ' + minutesLabel(data.balance.recentTotal)), h('span', {}, h('i', { class: 'viz-key previous' }), '之前 4 周 · ' + minutesLabel(data.balance.previousTotal))),
+        svg,
+        h('p', { class: 'sub' }, '每条轴是一个分区，单位都是已记录的时间；最外圈是 ' + minutesLabel(max) + '。'),
+        h('details', { class: 'viz-table' }, h('summary', {}, '用表格看'),
+          h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, '分区'), h('th', {}, '最近 4 周'), h('th', {}, '之前 4 周'))),
+            h('tbody', {}, axes.map((a) => h('tr', {}, h('td', {}, a.name), h('td', {}, minutesLabel(a.recent)), h('td', {}, minutesLabel(a.previous))))))),
+      ];
+    }
+    root.append(
+      h('div', { class: 'card-head' }, h('h3', {}, '成长轨迹'), h('span', { class: 'sub' }, '最近 20 周里有 ' + data.recordedDays + ' 天留下了记录')),
+      h('div', { class: 'viz-grid' },
+        h('div', { class: 'viz-block' }, h('h4', {}, '每天已记录的时间 · 最近 20 周'), heat, heatLegend),
+        h('div', { class: 'viz-block' }, h('h4', {}, '每周已记录的时间 · 最近 12 周'), weekly, h('p', { class: 'sub' }, '最高的一周是 ' + minutesLabel(peak.minutes) + '。只统计计时和补记，时间长短不代表学习效果。')),
+        h('div', { class: 'viz-block' }, h('h4', {}, '时间花在哪些分区'), balance)),
+      tip);
+    return root;
+  }
+
   /* The review is a page of its own: one week at a time, facts on the left, the user's own words on the right. */
   function renderReview() {
     const t = today();
@@ -1298,6 +1396,7 @@
           stat(String(sessions.length), '时间记录条数'),
           stat(activeDays + ' / 7', '有记录的天数'),
           stat(planned.filter((x) => x.done).length + ' / ' + planned.length, wk + '安排的完成情况')),
+        trajectoryCard((date) => { reviewOffset = Math.round(C.daysBetween(C.weekStart(t), C.weekStart(date)) / 7); reviewDay = date; render(); }),
         h('div', { class: 'review-grid' },
           h('div', { class: 'review-col' },
         h('section', { class: 'card' }, h('h3', {}, '这一周的每一天'), dayAccordion(days, sessions, max),

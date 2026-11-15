@@ -557,3 +557,27 @@ test('dates and times are read the way they are written, and nothing is guessed'
   assert.deepEqual(C.parseLine('做第2题', TODAY), { type: 'add_task', title: '做第2题', date: null, minutes: 30, space: null });
   assert.deepEqual(C.parseLine('复习第3章 明天下午3点 1.5小时', TODAY), { type: 'add_task', title: '复习第3章', date: '2026-11-15', time: '15:00', minutes: 90, space: null });
 });
+
+test('the longer view sums recorded time by day, week and space, and never invents any', () => {
+  const s = C.emptyState(); // TODAY is Saturday 2026-11-14; its week starts Monday 2026-11-09
+  const add = (date, actual, spaceId) => s.sessions.push({ id: 'x' + s.sessions.length, taskId: null, title: 'x', step: 'x', spaceId, planned: actual, actual, date, hour: 9, endedAt: 1, partial: false });
+  add(TODAY, 30, 'space_1'); add(TODAY, 20, 'space_2'); add('2026-11-10', 40, 'space_1'); add('2026-11-03', 60, null); // last four weeks
+  add('2026-10-10', 90, 'space_2'); add('2026-10-12', 15, 'gone');                                                  // the four weeks before
+  add('2026-01-01', 500, 'space_1');                                                                                // too old for any of the views
+  const t = C.trajectory(s, TODAY);
+  assert.equal(t.heat.length, 140);
+  assert.deepEqual([t.heat[0].date, t.heat[139].date], ['2026-06-29', '2026-11-15']);
+  assert.deepEqual(t.heat.filter((d) => d.minutes).map((d) => [d.date, d.minutes]), [['2026-10-10', 90], ['2026-10-12', 15], ['2026-11-03', 60], ['2026-11-10', 40], [TODAY, 50]]);
+  assert.equal(t.heat[139].minutes, null); // tomorrow has not happened: no value, not zero
+  assert.equal(t.recordedDays, 5);
+  assert.deepEqual(t.weeks.slice(-2).map((w) => [w.monday, w.minutes, w.activeDays]), [['2026-11-02', 60, 1], ['2026-11-09', 90, 2]]);
+  assert.equal(t.weeks.length, 12);
+  // One axis per space with time in either period; a record whose space is gone counts as unfiled.
+  assert.deepEqual(t.balance.axes.map((a) => [a.name, a.recent, a.previous]), [['项目', 20, 90], ['未分区', 60, 15], ['学习', 70, 0]]);
+  assert.deepEqual([t.balance.recentTotal, t.balance.previousTotal], [150, 105]);
+  // With nothing recorded the axes are padded to three so the shape can be drawn, all at zero.
+  const empty = C.trajectory(C.emptyState(), TODAY);
+  assert.deepEqual([empty.balance.axes.length, empty.balance.recentTotal, empty.recordedDays], [3, 0, 0]);
+  const two = C.emptyState(); two.spaces = two.spaces.slice(0, 2);
+  assert.equal(C.trajectory(two, TODAY).balance, null);
+});
