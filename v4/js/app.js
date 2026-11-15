@@ -17,7 +17,7 @@
     const key = platform.loadKey(state.settings.agent.provider, state.settings.agent.provider);
     if (key) platform.saveKey(state.settings.agent.provider, key, state.settings.agent.provider);
   } catch { /* keys stay as they were */ }
-  const ui = { panelSection: 'review', mode: state.settings.prefs.onboarded ? 'home' : 'planner', // the first-run interview happens in the chat
+  const ui = { panelSection: 'model', mode: state.settings.prefs.onboarded ? 'home' : 'planner', // the first-run interview happens in the chat
      space: null, tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0, search: '', abort: null };
   const library = new Map(); // files read during this session, by name; kept out of saved state because they are large
   let pip = null; // floating timer window, when open
@@ -261,7 +261,7 @@
         h('span', { class: 'avatar', style: 'background:var(--ink)' }, '台'), h('span', { class: 'rail-label' }, '工作台')),
       h('button', { class: 'rail-item' + (ui.mode === 'timetable' ? ' active' : ''), title: '课表', 'aria-label': '课表', onclick: () => { ui.mode = 'timetable'; render(); } }, h('span', { class: 'avatar', style: 'background:#567897' }, '课'), h('span', { class: 'rail-label' }, '课表')),
       h('button', { class: 'rail-item' + (ui.mode === 'week' ? ' active' : ''), title: '本周安排：七天的任务、周重点和可投入时间', 'aria-label': '本周安排', onclick: () => { ui.mode = 'week'; render(); } }, h('span', { class: 'avatar', style: 'background:#8a6f5a' }, '周'), h('span', { class: 'rail-label' }, '本周')),
-      h('button', { class: 'rail-item', title: '回看：每周的专注时间、完成情况和反思', 'aria-label': '回看', onclick: () => openSettings('review') }, h('span', { class: 'avatar', style: 'background:#7a8496' }, icon('bars')), h('span', { class: 'rail-label' }, '回看')),
+      h('button', { class: 'rail-item' + (ui.mode === 'review' ? ' active' : ''), title: '回看：每周的时间记录、完成情况和反思', 'aria-label': '回看', onclick: () => { ui.mode = 'review'; render(); } }, h('span', { class: 'avatar', style: 'background:#7a8496' }, icon('bars')), h('span', { class: 'rail-label' }, '回看')),
       h('div', { class: 'rail-rule' }),
       ...state.spaces.map((s) => item(s.id, s.name, s.color, s.name.slice(0, 1))),
       h('button', { class: 'rail-item', onclick: () => openSpaceDialog(null) },
@@ -973,7 +973,7 @@
 
   async function addFiles(fileList) {
     if (ui.mode === 'timetable') { timetable.openImport(fileList); return; }
-    if (ui.mode === 'home' || ui.mode === 'week') { ui.mode = 'planner'; ui.space = null; } // files go to the general chat
+    if (ui.mode === 'home' || ui.mode === 'week' || ui.mode === 'review') { ui.mode = 'planner'; ui.space = null; } // files go to the general chat
     const files = [...fileList].slice(0, 6);
     if (!files.length) return;
     if (files.some((f) => /课表|课程表|timetable|schedule/i.test(f.name))) toast('这像是课表。聊天里只会当作资料读，不会排进日程', { label: '去课表导入', run: () => {
@@ -1268,11 +1268,14 @@
     return box;
   }
   let reviewOffset = 0; // 0 is this week, -1 the week before, and so on
-  function reviewContent() {
+  /* The review is a page of its own: one week at a time, facts on the left, the user's own words on the right. */
+  function renderReview() {
     const t = today();
+    const old = $('.review-scroll');
+    const scrollAt = old ? old.scrollTop : 0;
     const start = C.addDays(C.weekStart(t), reviewOffset * 7);
     const wk = reviewOffset ? '这一周' : '本周';
-    const go = (n) => { reviewOffset = n; reviewDay = null; openSettings('review'); };
+    const go = (n) => { reviewOffset = n; reviewDay = null; render(); };
     const earliest = [...state.sessions.map((x) => x.date), ...state.tasks.map((x) => x.date || C.todayISO(new Date(x.createdAt || Date.now())))].sort()[0] || t;
     const days = Array.from({ length: 7 }, (_, i) => C.addDays(start, i));
     const sessions = state.sessions.filter((x) => x.date >= start && x.date <= days[6]);
@@ -1281,28 +1284,24 @@
     const doneWeek = state.tasks.filter((x) => x.done && x.doneAt && days.includes(C.todayISO(new Date(x.doneAt))));
     const planned = state.tasks.filter((x) => x.date && x.date >= start && x.date <= days[6]);
     const stat = (value, label) => h('div', { class: 'stat' }, h('strong', {}, value), h('span', { class: 'sub' }, label));
-    return h('div', { class: 'review-body' },
-        h('div', { class: 'week-nav' },
+    const activeDays = perDay.filter((n) => n > 0).length;
+    $('#main').replaceChildren(
+      h('header', { class: 'tt-header' }, h('div', {}, h('h2', {}, '回看'), h('p', { class: 'sub' }, '只显示已记录的事实：时间来自计时和补记，完成来自勾选。时间长短不代表学习效果。')),
+        h('div', { class: 'tt-week-nav' },
           h('button', { type: 'button', class: 'btn ghost', disabled: start <= earliest, onclick: () => go(reviewOffset - 1) }, '‹ 上一周'),
-          h('strong', {}, plainDate(days[0]) + ' 至 ' + plainDate(days[6]) + (reviewOffset ? '' : '（本周）')),
+          h('strong', {}, plainDate(days[0]) + ' – ' + plainDate(days[6]) + (reviewOffset ? '' : '（本周）')),
           h('button', { type: 'button', class: 'btn ghost', disabled: reviewOffset >= 0, onclick: () => go(reviewOffset + 1) }, '下一周 ›'),
-          reviewOffset ? h('button', { type: 'button', class: 'btn ghost', onclick: () => go(0) }, '回到本周') : null),
-        h('p', { class: 'sub' }, '只显示已记录的事实'),
+          reviewOffset ? h('button', { type: 'button', class: 'btn ghost', onclick: () => go(0) }, '回到本周') : null)),
+      h('div', { class: 'review-scroll' },
         h('div', { class: 'stats' },
-          stat(minutesLabel(perDay.reduce((a, b) => a + b, 0)), wk + '计时的专注时间'),
-          stat(String(sessions.length), '完成的计时段数'),
+          stat(minutesLabel(perDay.reduce((a, b) => a + b, 0)), wk + '已记录的时间'),
+          stat(String(sessions.length), '时间记录条数'),
+          stat(activeDays + ' / 7', '有记录的天数'),
           stat(planned.filter((x) => x.done).length + ' / ' + planned.length, wk + '安排的完成情况')),
-        h('section', { class: 'card' }, h('h3', {}, '助手对你的了解'),
-          h('ul', { class: 'plain' }, profileLines().map((line) => h('li', {}, line))),
-          h('div', { class: 'row' }, h('button', { class: 'pill soft', onclick: () => openSettings('memory') }, icon('note'), '查看和修改长期记忆（' + state.memory.length + ' 条）'))),
-        h('section', { class: 'card' },
-          h('div', { class: 'card-head' }, h('h3', {}, '反思'), h('button', { class: 'pill soft', onclick: () => openReflectionDialog(null) }, icon('plus'), '写一条')),
-          state.reflections.length ? h('div', { class: 'reflections' }, [...state.reflections].reverse().slice(0, 30).map((r) => h('article', { class: 'reflection' },
-            h('header', {}, h('strong', {}, dateLabel(r.date)), h('span', { class: 'sub' }, r.source === 'user' ? '自己写的' : '助手记录的'),
-              h('span', { class: 'grow' }),
-              h('button', { class: 'icon-btn small', 'aria-label': '修改这条反思', title: '修改', onclick: () => openReflectionDialog(r) }, icon('gear'))),
-            h('p', { class: 'reflection-text' }, r.text))))
-            : h('p', { class: 'empty' }, '还没有反思。可以把写在本子上的反思拍照拖进聊天框，助手会读出文字并记录在这里。')),
+        h('div', { class: 'review-grid' },
+          h('div', { class: 'review-col' },
+        h('section', { class: 'card' }, h('h3', {}, '这一周的每一天'), dayAccordion(days, sessions, max),
+          h('p', { class: 'sub' }, '点一天展开。竖条的高度是那天已记录的时间。')),
         h('section', { class: 'card' },
           h('div', { class: 'card-head' }, h('h3', {}, '时间记录'), h('button', { type: 'button', class: 'pill soft', onclick: () => openSessionDialog(null, { date: days.includes(t) ? t : days[0] }) }, icon('plus'), '补记一段')),
           sessions.length ? h('div', { class: 'session-list' }, [...sessions].sort((a, b) => b.date.localeCompare(a.date) || (b.endedAt || 0) - (a.endedAt || 0)).map((x) => h('button', { type: 'button', class: 'session-row', title: '修改这条记录', onclick: () => openSessionDialog(x) },
@@ -1312,15 +1311,26 @@
             h('span', { class: 'sub' }, [x.manual ? '补记' : x.edited ? '改过' : '', x.partial ? '没做完这一段' : ''].filter(Boolean).join(' · ')),
             h('b', {}, minutesLabel(x.actual)))))
             : h('p', { class: 'empty' }, '这一周还没有时间记录。用计时完成一段会自动记下；没开计时做的事可以补记。')),
-        h('section', { class: 'card' }, h('h3', {}, '这一周的每一天'), dayAccordion(days, sessions, max),
-          h('p', { class: 'sub' }, '点一天展开。竖条的高度是那天计时的专注时间，时间长短不代表学习效果。')),
-        h('section', { class: 'card' }, h('h3', {}, '习惯'),
+        h('section', { class: 'card' }, h('h3', {}, wk + '完成'),
+          doneWeek.length ? h('ul', { class: 'plain' }, doneWeek.map((x) => h('li', {}, x.title, h('span', { class: 'sub' }, ' · ' + minutesLabel(x.minutes))))) : h('p', { class: 'empty' }, wk + '没有完成的任务。'))),
+          h('div', { class: 'review-col' },
+        h('section', { class: 'card' },
+          h('div', { class: 'card-head' }, h('h3', {}, '反思'), h('button', { class: 'pill soft', onclick: () => openReflectionDialog(null) }, icon('plus'), '写一条')),
+          state.reflections.length ? h('div', { class: 'reflections' }, [...state.reflections].reverse().slice(0, 30).map((r) => h('article', { class: 'reflection' },
+            h('header', {}, h('strong', {}, dateLabel(r.date)), h('span', { class: 'sub' }, r.source === 'user' ? '自己写的' : '助手记录的'),
+              h('span', { class: 'grow' }),
+              h('button', { class: 'icon-btn small', 'aria-label': '修改这条反思', title: '修改', onclick: () => openReflectionDialog(r) }, icon('gear'))),
+            h('p', { class: 'reflection-text' }, r.text))))
+            : h('p', { class: 'empty' }, '还没有反思。可以把写在本子上的反思拍照拖进聊天框，助手会读出文字并记录在这里。')),
+        h('section', { class: 'card' }, h('h3', {}, '助手对你的了解'),
+          h('ul', { class: 'plain' }, profileLines().map((line) => h('li', {}, line))),
+          h('div', { class: 'row' }, h('button', { class: 'pill soft', onclick: () => openSettings('memory') }, icon('note'), '查看和修改长期记忆（' + state.memory.length + ' 条）'))),
+            state.habits.length ? h('section', { class: 'card' }, h('h3', {}, '习惯'),
           state.habits.length ? h('div', { class: 'habit-grid' }, state.habits.map((habit) => h('div', { class: 'habit-line' },
             h('span', { class: 'task-title' }, habit.title),
             h('span', { class: 'cells' }, days.map((d) => h('span', { class: 'cell' + (habit.log[d] ? ' on' : ''), title: dateLabel(d) }))),
-            h('span', { class: 'sub' }, C.habitWeekCount(habit, days[0]) + ' / ' + habit.perWeek)))) : h('p', { class: 'empty' }, '还没有习惯。')),
-        h('section', { class: 'card' }, h('h3', {}, wk + '完成'),
-          doneWeek.length ? h('ul', { class: 'plain' }, doneWeek.map((x) => h('li', {}, x.title, h('span', { class: 'sub' }, ' · ' + minutesLabel(x.minutes))))) : h('p', { class: 'empty' }, wk + '没有完成的任务。')));
+            h('span', { class: 'sub' }, C.habitWeekCount(habit, days[0]) + ' / ' + habit.perWeek)))) : h('p', { class: 'empty' }, '还没有习惯。')) : null))));
+    $('.review-scroll').scrollTop = scrollAt;
   }
 
   /* ---------- dialogs ---------- */
@@ -1671,7 +1681,6 @@
     };
     const saveRow = () => h('div', { class: 'dialog-actions' }, h('span', { class: 'grow' }), h('button', { type: 'button', class: 'btn dark', onclick: save }, '保存'));
     const sections = {
-      review: ['回看', 'bars', () => [reviewContent()]],
       model: ['AI 模型', 'chip', () => [
         field('服务商', h('select', { name: 'provider', onchange: (e) => {
           Object.assign(d, { provider: e.target.value, baseUrl: Providers.find(e.target.value).baseUrl, modelId: '', models: [], vision: null, key: '', status: [], manual: false });
@@ -1735,7 +1744,7 @@
           h('button', { type: 'button', class: 'btn ghost', onclick: () => { if (confirm('清空全部对话？任务、记录和记忆会保留。')) { closePanel(); undoable('对话已清空', () => change((s) => { s.messages = []; })); } } }, '清空对话')),
       ]],
     };
-    if (!sections[ui.panelSection]) ui.panelSection = 'review';
+    if (!sections[ui.panelSection]) ui.panelSection = 'model';
     const [title, , body] = sections[ui.panelSection];
     const panel = $('#panel');
     const previous = panel.querySelector('.panel-content');
@@ -1977,11 +1986,11 @@
         h('section', { class: 'wk-top' },
           h('label', { class: 'field wk-focus' }, h('span', {}, '这一周的重点（建议 1–3 件，每行一件）'),
             h('textarea', { rows: 3, maxLength: 400, value: sum.focus, placeholder: '例如：\n操作系统复习到第 5 章\n交实验报告', onchange: saveFocus })),
-          h('div', { class: 'wk-stats' },
+          h('div', { class: 'field wk-side' }, h('span', {}, '这一周的时间'), h('div', { class: 'wk-stats' },
             h('label', { class: 'wk-stat edit' }, h('input', { type: 'number', min: 0, max: 10080, 'aria-label': '本周可投入分钟', value: sum.capacityIsDefault ? '' : sum.capacity, placeholder: sum.capacity != null ? String(sum.capacity) : '未设', onchange: saveCapacity }),
-              h('small', {}, '本周可投入（分钟）' + (sum.capacityIsDefault && sum.capacity != null ? ' · 按每天 ' + state.settings.prefs.dailyMinutes + ' 分钟算' : ''))),
+              h('small', {}, '本周可投入（分钟）' + (sum.capacityIsDefault && sum.capacity != null ? ' · 按每天 ' + state.settings.prefs.dailyMinutes + ' 分钟算' : sum.capacity == null ? ' · 点数字填写' : ''))),
             stat(minutesLabel(sum.scheduled), '已排到某一天'), stat(minutesLabel(sum.unscheduled), '本周未定'), stat(minutesLabel(sum.recorded), '已记录'),
-            sum.over ? stat(minutesLabel(sum.over), '计划超出可投入', 'over') : null)),
+            sum.over ? stat(minutesLabel(sum.over), '计划超出可投入', 'over') : stat(sum.capacity != null ? minutesLabel(Math.max(0, sum.capacity - sum.planned)) : '—', sum.capacity != null ? '还能再安排' : '没有设可投入时间')))),
         h('div', { class: 'wk-days' }, days.map(dayColumn)),
         dropZone(h('section', { class: 'wk-loose' },
           h('header', {}, h('strong', {}, '本周未定'), h('small', {}, '这一周要做、还没定哪天的事 · ' + loose.length + ' 项')),
@@ -1994,8 +2003,8 @@
     if (ui.mode === 'home') ui.space = null; // the workbench is about everything, not one space
     renderRail();
     renderList();
-    $('#shell').classList.toggle('timetable-mode', ui.mode === 'timetable' || ui.mode === 'week' || ui.mode === 'home');
-    if (ui.mode === 'timetable') timetable.render(); else if (ui.mode === 'week') renderWeek(); else if (ui.mode === 'home') renderHome(); else renderChat();
+    $('#shell').classList.toggle('timetable-mode', ui.mode === 'timetable' || ui.mode === 'week' || ui.mode === 'home' || ui.mode === 'review');
+    if (ui.mode === 'timetable') timetable.render(); else if (ui.mode === 'review') renderReview(); else if (ui.mode === 'week') renderWeek(); else if (ui.mode === 'home') renderHome(); else renderChat();
     renderDock();
     if ($('#panel').open && panelDraft) openSettingsDialog(panelDraft); // keep the open settings panel in step with the data
   }
