@@ -258,6 +258,7 @@
     $('#rail').replaceChildren(
       item(null, '全部', 'var(--ink)', '全'),
       h('button', { class: 'rail-item' + (ui.mode === 'timetable' ? ' active' : ''), title: '课表', 'aria-label': '课表', onclick: () => { ui.mode = 'timetable'; render(); } }, h('span', { class: 'avatar', style: 'background:#567897' }, '课'), h('span', { class: 'rail-label' }, '课表')),
+      h('button', { class: 'rail-item' + (ui.mode === 'week' ? ' active' : ''), title: '本周安排：七天的任务、周重点和可投入时间', 'aria-label': '本周安排', onclick: () => { ui.mode = 'week'; render(); } }, h('span', { class: 'avatar', style: 'background:#8a6f5a' }, '周'), h('span', { class: 'rail-label' }, '本周')),
       h('button', { class: 'rail-item', title: '回看：每周的专注时间、完成情况和反思', 'aria-label': '回看', onclick: () => openSettings('review') }, h('span', { class: 'avatar', style: 'background:#7a8496' }, icon('bars')), h('span', { class: 'rail-label' }, '回看')),
       h('div', { class: 'rail-rule' }),
       ...state.spaces.map((s) => item(s.id, s.name, s.color, s.name.slice(0, 1))),
@@ -276,13 +277,14 @@
       .filter((x) => {
         if (tab === 'todo') return !x.done;
         if (tab === 'today') return x.date && (x.date === t || (x.date < t && !x.done));
-        if (tab === 'week') return x.date && x.date > t && x.date <= weekEnd;
-        return !x.date || x.date > weekEnd;
+        const looseThisWeek = !x.date && x.week === C.weekStart(t);
+        if (tab === 'week') return looseThisWeek || (x.date && x.date > t && x.date <= weekEnd);
+        return (!x.date && !looseThisWeek) || x.date > weekEnd;
       })
       .sort(byWhen);
   }
   const byWhen = (a, b) => a.done - b.done || (a.date || '9999').localeCompare(b.date || '9999') || (a.time || '99:99').localeCompare(b.time || '99:99') || a.createdAt - b.createdAt;
-  const whenLabel = (t) => dateLabel(t.date) + (t.time ? ' ' + t.time : '');
+  const whenLabel = (t) => (!t.date && t.week ? (t.week === C.weekStart(today()) ? '本周未定' : plainDate(t.week) + ' 那一周未定') : dateLabel(t.date) + (t.time ? ' ' + t.time : ''));
   /* After a task is finished with its timer, one click of feedback goes into the profile. */
   function askFeel(s, task) {
     const actual = s.sessions.filter((x) => x.taskId === task.id).reduce((n, x) => n + x.actual, 0);
@@ -297,8 +299,36 @@
         askFeel(result.state, result.state.tasks.find((t) => t.id === taskId));
         if (pip) pip.close();
       }
-      commit(result.state);
+      if (commit(result.state) && result.wasTiming && result.session) openWrapUp(taskId, result.session.id);
     } catch (error) { toast(error.message); }
+  }
+  /* When a sitting ends: what was done, where it got stuck, where to pick up. All optional, one screen. */
+  function openWrapUp(taskId, sessionId) {
+    const task = state.tasks.find((t) => t.id === taskId);
+    const session = state.sessions.find((x) => x.id === sessionId);
+    if (!task || !session) return;
+    const form = openDialog('这一轮记一笔', [
+      h('p', { class: 'sub' }, '「' + task.title + '」· 这一段 ' + minutesLabel(session.actual) + '。都可以不填。'),
+      field('做了什么', h('textarea', { name: 'did', rows: 2, maxLength: 600, value: session.note || '' })),
+      field('卡在哪 / 想法', h('textarea', { name: 'stuck', rows: 2, maxLength: 600, value: session.stuck || '' })),
+      task.done ? null : field('下次从哪里继续', h('input', { name: 'next', maxLength: 300, value: task.next || '', placeholder: '例如：从第 3 章例 5 开始' })),
+    ], [
+      h('span', { class: 'grow' }), h('button', { type: 'button', class: 'btn ghost', onclick: closeDialog }, '跳过'),
+      h('button', { class: 'btn dark', onclick: () => {
+        try { if (commit(C.wrapUp(state, { taskId, sessionId, did: form.did.value, stuck: form.stuck.value, next: form.next ? form.next.value : '' }))) { closeDialog(); toast('已记下，在「回看」的时间记录里能看到'); } }
+        catch (error) { toast(error.message); }
+      } }, '保存'),
+    ]);
+    form.did.focus();
+  }
+  /* Stops the timer without finishing the step; a minute or more of work is recorded and can be written up. */
+  function stopTimerNow() {
+    const timer = state.timer;
+    if (!timer) return;
+    const before = state.sessions.length;
+    if (pip) pip.close();
+    if (!commit(C.stopTimer(state, Date.now()))) return;
+    if (state.sessions.length > before) openWrapUp(timer.taskId, state.sessions[state.sessions.length - 1].id);
   }
   const stepLines = (steps) => h('ol', { class: 'steps' }, steps.map((x, i) => h('li', { class: x.done ? 'done' : '' },
     h('span', { class: 'num' }, i + 1 + '.'), h('span', { class: 'step-title' }, x.title), h('span', { class: 'sub' }, x.minutes + ' 分'))));
@@ -314,6 +344,7 @@
       }, t.done ? icon('check') : null),
       h('button', { class: 'task-body', onclick: () => openTaskDialog(t) },
         h('span', { class: 'task-title' }, t.title),
+        t.next && !t.done ? h('span', { class: 'task-next' }, '继续：' + t.next) : null,
         h('span', { class: 'task-meta' },
           sp ? h('span', { class: 'dot', style: 'background:' + sp.color }) : null,
           h('span', { class: overdue ? 'overdue' : '' }, overdue ? '已过期 · ' + whenLabel(t) : whenLabel(t)),
@@ -797,6 +828,7 @@
           onchange: (e) => { try { commit(C.editProposal(state, message.id, index, { kind: 'text', text: e.target.value })); } catch (error) { toast(error.message); } } })
         : h('p', { class: 'reflection-text' }, a.text));
     }
+    if (a.type === 'log_time') return line('补记', a.title, minutesLabel(a.minutes) + ' · ' + (a.date ? dateLabel(a.date) : '今天'));
     if (a.type === 'add_date') return line('日期', a.title, plainDate(a.date) + (a.time ? ' ' + a.time : '') + (a.place ? ' · ' + a.place : '') + ' · ' + (C.daysBetween(today(), a.date) >= 0 ? '还有 ' + C.daysBetween(today(), a.date) + ' 天' : '已经过去'));
     if (a.type === 'add_cards') return line('卡片', a.cards.length + ' 张复习卡片', a.spaceId ? (space(a.spaceId) || {}).name : '', h('ol', { class: 'card-preview' }, a.cards.map((c) => h('li', {}, h('span', {}, c.front), h('small', {}, c.back)))));
     if (a.type === 'log_metric') return line('记录', a.name + ' ' + a.value + (a.unit ? ' ' + a.unit : ''), a.date ? dateLabel(a.date) : '今天');
@@ -1072,7 +1104,7 @@
       askFeel(result.state, result.state.tasks.find((t) => t.id === result.finishedTask));
       if (pip) pip.close();
     }
-    commit(result.state);
+    if (commit(result.state) && result.finishedTask && result.session) openWrapUp(result.finishedTask, result.session.id);
   }
   function renderDock() {
     const inPage = $('#dock');
@@ -1099,7 +1131,8 @@
       h('div', { class: 'dock-head' },
         h('div', { class: 'dock-titles' },
           h('span', { class: 'sub' }, view.task.title + ' · 第 ' + (view.index + 1) + '/' + view.total + ' 段'),
-          h('strong', { class: 'dock-step' }, view.step.title)),
+          h('strong', { class: 'dock-step' }, view.step.title),
+          view.task.next ? h('span', { class: 'sub dock-next', title: view.task.next }, '上次停在：' + view.task.next) : null),
         h('div', { class: 'dock-corner' },
           iconButton('最小化', 'shrink', () => setCompact(true)),
           !pip && (platform.openFloating || 'documentPictureInPicture' in window) ? iconButton('打开悬浮窗', 'pop', openFloating) : null)),
@@ -1109,7 +1142,7 @@
         view.running ? button('暂停', 'outline slim', () => commit(C.pauseTimer(state, Date.now())), 'pause') : button('继续', 'outline slim', () => commit(C.resumeTimer(state, Date.now())), 'play'),
         button(last ? '完成' : '下一段', 'dark', finishCurrentStep, 'check'),
         button('+5 分', 'ghost', () => commit(C.extendTimer(state, 5))),
-        button('结束', 'ghost', () => { if (pip) pip.close(); commit(C.stopTimer(state, Date.now())); })));
+        button('结束', 'ghost', stopTimerNow)));
     // A running timer must stay visible: if the task column is closed and there is no floating window, open the column.
     if (!pip && state.settings.prefs.listWidth === 0) showListWidth(LIST.min);
     if (pip) { pip.document.body.replaceChildren(content); inPage.hidden = true; inPage.replaceChildren(); }
@@ -1168,7 +1201,7 @@
     else if (command === 'resume') commit(C.resumeTimer(state, Date.now()));
     else if (command === 'extend') commit(C.extendTimer(state, 5));
     else if (command === 'next') finishCurrentStep();
-    else if (command === 'stop') commit(C.stopTimer(state, Date.now()));
+    else if (command === 'stop') stopTimerNow();
   });
 
   /* ---------- review ---------- */
@@ -1261,6 +1294,15 @@
               h('button', { class: 'icon-btn small', 'aria-label': '修改这条反思', title: '修改', onclick: () => openReflectionDialog(r) }, icon('gear'))),
             h('p', { class: 'reflection-text' }, r.text))))
             : h('p', { class: 'empty' }, '还没有反思。可以把写在本子上的反思拍照拖进聊天框，助手会读出文字并记录在这里。')),
+        h('section', { class: 'card' },
+          h('div', { class: 'card-head' }, h('h3', {}, '时间记录'), h('button', { type: 'button', class: 'pill soft', onclick: () => openSessionDialog(null, { date: days.includes(t) ? t : days[0] }) }, icon('plus'), '补记一段')),
+          sessions.length ? h('div', { class: 'session-list' }, [...sessions].sort((a, b) => b.date.localeCompare(a.date) || (b.endedAt || 0) - (a.endedAt || 0)).map((x) => h('button', { type: 'button', class: 'session-row', title: '修改这条记录', onclick: () => openSessionDialog(x) },
+            h('span', { class: 'session-when' }, dateLabel(x.date).split(' ')[0] + (x.startTime ? ' ' + x.startTime : '')),
+            h('span', { class: 'session-what' }, x.step && x.step !== x.title ? x.title + ' · ' + x.step : x.title,
+              x.note || x.stuck ? h('small', {}, [x.note, x.stuck ? '卡在：' + x.stuck : ''].filter(Boolean).join('　')) : null),
+            h('span', { class: 'sub' }, [x.manual ? '补记' : x.edited ? '改过' : '', x.partial ? '没做完这一段' : ''].filter(Boolean).join(' · ')),
+            h('b', {}, minutesLabel(x.actual)))))
+            : h('p', { class: 'empty' }, '这一周还没有时间记录。用计时完成一段会自动记下；没开计时做的事可以补记。')),
         h('section', { class: 'card' }, h('h3', {}, '这一周的每一天'), dayAccordion(days, sessions, max),
           h('p', { class: 'sub' }, '点一天展开。竖条的高度是那天计时的专注时间，时间长短不代表学习效果。')),
         h('section', { class: 'card' }, h('h3', {}, '习惯'),
@@ -1288,8 +1330,8 @@
 
   /* `draft` carries what was typed so far when the dialog is rebuilt after a step edit. */
   function openTaskDialog(task, draft) {
-    const v = draft || { title: task ? task.title : '', date: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today(), time: task ? task.time || '' : '', minutes: task ? task.minutes : 30, space: task ? task.spaceId || '' : ui.space || '' };
-    const typed = () => ({ title: form.title.value, date: form.date.value, time: form.time.value, minutes: form.minutes.value, space: form.space.value });
+    const v = draft || { title: task ? task.title : '', date: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today(), next: task ? task.next || '' : '', time: task ? task.time || '' : '', minutes: task ? task.minutes : 30, space: task ? task.spaceId || '' : ui.space || '' };
+    const typed = () => ({ next: form.next.value, title: form.title.value, date: form.date.value, time: form.time.value, minutes: form.minutes.value, space: form.space.value });
     const editStep = (op) => {
       try {
         if (!commit(C.editTaskSteps(state, task.id, op))) return;
@@ -1325,7 +1367,10 @@
         field('预计分钟', h('input', { name: 'minutes', type: 'number', min: 1, max: 1440, value: v.minutes, disabled: !!(task && task.steps), title: task && task.steps ? '有分段时，总时长是各段之和' : '' }))),
       h('p', { class: 'sub' }, '填了开始时间的任务会和课程一起显示在课表的周视图里，并在开始前提醒。'),
       field('分区', h('select', { name: 'space' }, h('option', { value: '' }, '不分区'), state.spaces.map((x) => h('option', { value: x.id, selected: x.id === v.space }, x.name)))),
+      field('下次从哪里继续（可以留空，开始计时时会显示）', h('input', { name: 'next', maxLength: 300, value: v.next || '' })),
       stepEditor,
+      task ? h('div', { class: 'row' }, h('button', { type: 'button', class: 'pill soft', onclick: () => openSessionDialog(null, { taskId: task.id }) }, icon('plus'), '补记这个任务花的时间'),
+        h('span', { class: 'sub' }, '已记录 ' + minutesLabel(state.sessions.filter((x) => x.taskId === task.id).reduce((n, x) => n + x.actual, 0)))) : null,
     ], [
       task ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这个任务？')) { undoable('任务已删除', () => change((s) => { s.tasks = s.tasks.filter((x) => x.id !== task.id); if (s.timer && s.timer.taskId === task.id) s.timer = null; })); closeDialog(); } } }, '删除') : null,
       h('span', { class: 'grow' }), cancelButton(),
@@ -1343,6 +1388,9 @@
           Object.assign(target, values);
           if (target.steps) target.minutes = target.steps.reduce((n, x) => n + x.minutes, 0);
           if (time) target.time = time; else delete target.time;
+          if (date) delete target.week;
+          const next = form.next.value.replace(/\s+/g, ' ').trim();
+          if (next) target.next = next; else delete target.next;
           if (!task) s.tasks.push(target);
         });
         if (ok) closeDialog();
@@ -1432,6 +1480,32 @@
     form.text.focus();
   }
 
+  /* Adds a time record by hand, or corrects a saved one. */
+  function openSessionDialog(session, preset = {}) {
+    const taskId = session ? session.taskId : preset.taskId || '';
+    const choices = state.tasks.filter((x) => !x.done || x.id === taskId).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 80);
+    const form = openDialog(session ? '修改时间记录' : '补记一段时间', [
+      field('做了什么', h('input', { name: 'title', maxLength: 150, value: session ? session.title : '', placeholder: '选了任务可以不填' })),
+      field('关联的任务（可以不选）', h('select', { name: 'task' }, h('option', { value: '' }, '不关联'), choices.map((x) => h('option', { value: x.id, selected: x.id === taskId }, x.title.slice(0, 40))))),
+      h('div', { class: 'row' },
+        field('日期', h('input', { name: 'date', type: 'date', max: today(), value: session ? session.date : preset.date || today() })),
+        field('分钟', h('input', { name: 'minutes', type: 'number', min: 1, max: 1440, value: session ? session.actual : 30 })),
+        field('开始时间（可以留空）', h('input', { name: 'time', type: 'time', value: session ? session.startTime || '' : '' }))),
+      field('备注（可以留空）', h('textarea', { name: 'note', rows: 2, maxLength: 600, value: session ? session.note || '' : '' })),
+      session && !session.manual ? h('p', { class: 'sub' }, '这是计时产生的记录（计划 ' + session.planned + ' 分钟）。改过之后，它不再用来估计你的实际速度。') : null,
+    ], [
+      session ? h('button', { type: 'button', class: 'btn danger', onclick: () => { undoable('时间记录已删除', () => change((s) => { s.sessions = s.sessions.filter((x) => x.id !== session.id); })); closeDialog(); } }, '删除') : null,
+      h('span', { class: 'grow' }), cancelButton(),
+      h('button', { class: 'btn dark', onclick: () => {
+        const values = { title: form.title.value, taskId: form.task.value || null, date: form.date.value, minutes: form.minutes.value, startTime: form.time.value, note: form.note.value };
+        if (values.date > today()) return toast('不能补记还没到的日期');
+        try { if (commit(session ? C.updateSession(state, session.id, values) : C.addSession(state, values, Date.now()))) closeDialog(); }
+        catch (error) { toast(error.message); }
+      } }, '保存'),
+    ]);
+    (session ? form.minutes : form.title).focus();
+  }
+
   function openMemoryDialog(memory) {
     const form = openDialog('修改这条记忆', [
       field('助手每次回答前都会读到这句话', h('textarea', { name: 'text', rows: 4, maxLength: 300, value: memory.text })),
@@ -1497,9 +1571,20 @@
       const file = e.target.files[0];
       if (!file) return;
       try {
-        const next = C.normalize(JSON.parse(await file.text()));
-        next.settings.agent = Providers.migrate(next.settings.agent);
-        if (!confirm('导入会替换现在的全部数据（' + next.tasks.length + ' 个任务，' + next.habits.length + ' 个习惯）。继续吗？')) return;
+        const raw = JSON.parse(await file.text());
+        let next;
+        if (C.isV3Export(raw)) {
+          // A v3 backup has other shapes: it is converted, and the user is told what does and does not come across.
+          const { state: converted, report: r } = C.convertV3(raw);
+          next = converted;
+          next.settings.agent = state.settings.agent; // v3 backups carry no key; the model set up here stays
+          const skipped = [r.skippedTrees ? r.skippedTrees + ' 棵决策树' : '', r.skippedProposals ? r.skippedProposals + ' 份 AI 草稿' : '', r.skippedSessions ? r.skippedSessions + ' 条无效的时间记录' : '', '任务的置顶和分类标记'].filter(Boolean).join('、');
+          if (!confirm('这是 T计划 v3 的备份。\n\n会带过来：' + r.tasks + ' 个任务、' + r.sessions + ' 条时间记录、' + r.reflections + ' 条反思、' + r.spaces + ' 个任务分区、' + r.weekPlans + ' 周的周重点。\n不会带过来：' + skipped + '。\n\n导入会替换现在的全部数据（可以撤销）。继续吗？')) return;
+        } else {
+          next = C.normalize(raw);
+          next.settings.agent = Providers.migrate(next.settings.agent);
+          if (!confirm('导入会替换现在的全部数据（' + next.tasks.length + ' 个任务，' + next.habits.length + ' 个习惯）。继续吗？')) return;
+        }
         if (undoable('已导入，原来的数据可以撤销找回', () => commit(next))) closePanel();
       } catch (error) { toast('导入失败：' + error.message); }
     } });
@@ -1630,11 +1715,88 @@
       addDate: (title) => { const sp = spaceForCourse(title); openDateDialog(null, { title: title + ' 考试', spaceId: sp ? sp.id : null }); },
       openSpace: (id) => { ui.mode = 'planner'; ui.space = id; render(); },
     } });
+  /* ---------- the week page: seven days, the week's undated tasks, its focus and capacity ---------- */
+  function renderWeek() {
+    const t = today();
+    const monday = ui.week || (ui.week = C.weekStart(t));
+    const days = Array.from({ length: 7 }, (_, i) => C.addDays(monday, i));
+    const sum = C.weekSummary(state, monday);
+    const old = $('.wk-scroll');
+    const scrollAt = old ? old.scrollTop : 0;
+    const go = (date) => { ui.week = C.weekStart(date); render(); };
+    const move = (id, target, label) => { try { const next = C.moveTask(state, id, target); undoable(label, () => commit(next)); } catch (error) { toast(error.message); } };
+    const dayName = (d) => '周' + '一二三四五六日'[days.indexOf(d)];
+    /* Anything that accepts a dragged task card. */
+    const dropZone = (el, target, label) => {
+      el.addEventListener('dragover', (e) => { if ([...e.dataTransfer.types].includes('text/tplan-task')) { e.preventDefault(); el.classList.add('drop'); } });
+      el.addEventListener('dragleave', (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove('drop'); });
+      el.addEventListener('drop', (e) => { const id = e.dataTransfer.getData('text/tplan-task'); el.classList.remove('drop'); if (!id) return; e.preventDefault(); e.stopPropagation(); move(id, target, label); });
+      return el;
+    };
+    const card = (task) => {
+      const sp = space(task.spaceId);
+      return h('div', { class: 'wk-card' + (task.done ? ' done' : ''), draggable: true, ondragstart: (e) => { e.dataTransfer.setData('text/tplan-task', task.id); e.dataTransfer.effectAllowed = 'move'; } },
+        h('button', { class: 'check', 'aria-label': task.done ? '标记为未完成' : '标记为完成', 'aria-pressed': String(task.done), onclick: () => toggleDone(task.id) }, task.done ? icon('check') : null),
+        h('button', { class: 'wk-title', title: '打开任务', onclick: () => openTaskDialog(task) }, h('span', {}, task.title),
+          h('small', {}, sp ? h('i', { class: 'dot', style: 'background:' + sp.color }) : null, (task.time ? task.time + ' · ' : '') + minutesLabel(task.minutes))),
+        h('select', { class: 'wk-move', 'aria-label': '把「' + task.title + '」改到哪一天', title: '改日期（也可以直接拖动）', onchange: (e) => {
+          const v = e.target.value;
+          if (v === 'week') move(task.id, { week: monday }, '已放到本周未定');
+          else if (v === 'none') move(task.id, {}, '已改为不定日期');
+          else if (v) move(task.id, { date: v }, '已改到 ' + dayName(v));
+        } }, h('option', { value: '' }, '改日期'), days.map((d) => h('option', { value: d, disabled: d === task.date }, dayName(d) + ' ' + Number(d.slice(8)) + '日')),
+          h('option', { value: 'week' }, '这一周，先不定哪天'), h('option', { value: 'none' }, '不属于这一周')));
+    };
+    const quickAdd = (fields, placeholder) => h('input', { class: 'wk-add', placeholder, maxLength: 150, 'aria-label': placeholder, onkeydown: (e) => {
+      if (e.key !== 'Enter' || e.isComposing || !e.target.value.trim()) return;
+      const title = e.target.value.trim();
+      change((s) => s.tasks.push({ id: C.uid('t'), title, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: Date.now(), origin: 'user', date: null, ...fields }));
+    } });
+    const recordedOn = (d) => state.sessions.filter((x) => x.date === d).reduce((n, x) => n + x.actual, 0);
+    const dayColumn = (d) => {
+      const tasks = state.tasks.filter((x) => x.date === d).sort(byWhen);
+      const classes = T.events(state.schedule, d, d);
+      const planned = tasks.reduce((n, x) => n + x.minutes, 0);
+      const recorded = recordedOn(d);
+      return dropZone(h('section', { class: 'wk-day' + (d === t ? ' today' : '') + (d < t ? ' past' : ''), 'aria-label': dayName(d) },
+        h('header', {}, h('strong', {}, dayName(d) + (d === t ? ' · 今天' : '')), h('small', {}, plainDate(d))),
+        h('p', { class: 'wk-meta' }, tasks.length ? tasks.filter((x) => x.done).length + '/' + tasks.length + ' 项 · 计划 ' + minutesLabel(planned) : '没有任务', recorded ? ' · 已记录 ' + minutesLabel(recorded) : ''),
+        classes.length ? h('div', { class: 'wk-classes' }, classes.map((e) => h('button', { class: 'wk-class', title: e.title + (e.room ? ' · ' + e.room : ''), onclick: () => timetable.details(e) }, e.startTime + ' ' + e.title))) : null,
+        tasks.map(card), quickAdd({ date: d }, '加一件事，回车')), { date: d }, '已改到 ' + dayName(d));
+    };
+    const loose = state.tasks.filter((x) => !x.date && x.week === monday).sort(byWhen);
+    const others = state.tasks.filter((x) => !x.date && !x.week && !x.done).sort(byWhen).slice(0, 60);
+    const stat = (value, label, cls) => h('div', { class: 'wk-stat ' + (cls || '') }, h('strong', {}, value), h('small', {}, label));
+    const saveFocus = (e) => { if (e.target.value.trim() !== sum.focus) try { commit(C.setWeekPlan(state, monday, { focus: e.target.value })); } catch (error) { toast(error.message); } };
+    const saveCapacity = (e) => { try { commit(C.setWeekPlan(state, monday, { capacity: e.target.value.trim() === '' ? null : e.target.value })); } catch (error) { toast(error.message); e.target.value = sum.capacityIsDefault ? '' : sum.capacity; } };
+    $('#main').replaceChildren(
+      h('header', { class: 'tt-header' }, h('div', {}, h('h2', {}, '本周安排'), h('p', { class: 'sub' }, '把任务拖到某一天，或用卡片上的「改日期」。计划时长和已记录时长是两回事，这里分开显示。')),
+        h('div', { class: 'tt-week-nav' }, h('button', { class: 'btn ghost', onclick: () => go(C.addDays(monday, -7)) }, '‹ 上周'),
+          h('strong', {}, plainDate(days[0]) + ' – ' + plainDate(days[6]) + (monday === C.weekStart(t) ? '（本周）' : '')),
+          h('button', { class: 'btn ghost', onclick: () => go(C.addDays(monday, 7)) }, '下周 ›'),
+          monday !== C.weekStart(t) ? h('button', { class: 'btn ghost', onclick: () => go(t) }, '回到本周') : null)),
+      h('div', { class: 'wk-scroll' },
+        h('section', { class: 'wk-top' },
+          h('label', { class: 'field wk-focus' }, h('span', {}, '这一周的重点（建议 1–3 件，每行一件）'),
+            h('textarea', { rows: 3, maxLength: 400, value: sum.focus, placeholder: '例如：\n操作系统复习到第 5 章\n交实验报告', onchange: saveFocus })),
+          h('div', { class: 'wk-stats' },
+            h('label', { class: 'wk-stat edit' }, h('input', { type: 'number', min: 0, max: 10080, 'aria-label': '本周可投入分钟', value: sum.capacityIsDefault ? '' : sum.capacity, placeholder: sum.capacity != null ? String(sum.capacity) : '未设', onchange: saveCapacity }),
+              h('small', {}, '本周可投入（分钟）' + (sum.capacityIsDefault && sum.capacity != null ? ' · 按每天 ' + state.settings.prefs.dailyMinutes + ' 分钟算' : ''))),
+            stat(minutesLabel(sum.scheduled), '已排到某一天'), stat(minutesLabel(sum.unscheduled), '本周未定'), stat(minutesLabel(sum.recorded), '已记录'),
+            sum.over ? stat(minutesLabel(sum.over), '计划超出可投入', 'over') : null)),
+        h('div', { class: 'wk-days' }, days.map(dayColumn)),
+        dropZone(h('section', { class: 'wk-loose' },
+          h('header', {}, h('strong', {}, '本周未定'), h('small', {}, '这一周要做、还没定哪天的事 · ' + loose.length + ' 项')),
+          h('div', { class: 'wk-loose-cards' }, loose.map(card), quickAdd({ week: monday }, '加一件这周要做的事，回车'))), { week: monday }, '已放到本周未定'),
+        others.length ? h('details', { class: 'wk-others' }, h('summary', {}, '其他没定日期的任务（' + others.length + '），可以拖到上面'), h('div', { class: 'wk-loose-cards' }, others.map(card))) : null));
+    $('.wk-scroll').scrollTop = scrollAt;
+  }
+
   function render() {
     renderRail();
     renderList();
-    $('#shell').classList.toggle('timetable-mode', ui.mode === 'timetable');
-    if (ui.mode === 'timetable') timetable.render(); else renderChat();
+    $('#shell').classList.toggle('timetable-mode', ui.mode === 'timetable' || ui.mode === 'week');
+    if (ui.mode === 'timetable') timetable.render(); else if (ui.mode === 'week') renderWeek(); else renderChat();
     renderDock();
     if ($('#panel').open && panelDraft) openSettingsDialog(panelDraft); // keep the open settings panel in step with the data
   }

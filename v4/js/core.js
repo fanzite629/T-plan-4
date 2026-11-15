@@ -60,6 +60,7 @@
       messages: [],
       memory: [],
       timer: null,
+      weekPlans: {},
       schedule: Timetable.empty(),
       settings: {
         agent: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', modelId: '', models: [], vision: null },
@@ -91,6 +92,8 @@
     for (const t of s.tasks) {
       if (!validDate(t.date)) t.date = null;
       if (!t.date || !validTime(t.time)) delete t.time; // a start time only means something on a dated task
+      if (t.date || !validDate(t.week)) delete t.week; // an undated task may belong to one week
+      if (typeof t.next !== 'string' || !t.next.trim()) delete t.next;
       if (!spaceIds.has(t.spaceId)) t.spaceId = null;
       if (!goalIds.has(t.goalId)) t.goalId = null;
       if (!Array.isArray(t.steps) || !t.steps.length) delete t.steps;
@@ -104,6 +107,8 @@
       if (!Array.isArray(g.milestones)) g.milestones = [];
       if (!spaceIds.has(g.spaceId)) g.spaceId = null;
     }
+    if (!isObject(s.weekPlans)) s.weekPlans = {};
+    s.sessions = s.sessions.filter((x) => isObject(x) && validDate(x.date) && Number(x.actual) > 0);
     s.dates = s.dates.filter((d) => isObject(d) && validDate(d.date) && typeof d.title === 'string' && d.title);
     for (const d of s.dates) {
       if (!spaceIds.has(d.spaceId)) d.spaceId = null;
@@ -247,6 +252,14 @@
         if (!text) throw new Error('记忆内容为空');
         return { type: 'remember', text };
       }
+      case 'log_time': {
+        const minutes = Math.round(Number(a.minutes));
+        if (!(minutes >= 1 && minutes <= 1440)) throw new Error('补记的时间需要是 1–1440 分钟');
+        const task = a.taskId ? existing(a.taskId) : null;
+        const title = cleanText(a.title, 150) || (task ? task.title : '');
+        if (!title) throw new Error('补记缺少内容');
+        return { type: 'log_time', title, minutes, date: validDate(a.date) ? a.date : null, taskId: task ? task.id : null, spaceId: task ? task.spaceId : pickSpace(state, a) };
+      }
       case 'add_date': {
         const title = cleanText(a.title, 80);
         if (!title) throw new Error('重要日期缺少名称');
@@ -303,11 +316,161 @@
       s.reflections.push({ id: uid('r'), date: a.date || todayISO(new Date(now)), text: a.text, at: now, source: origin });
     } else if (a.type === 'remember') {
       addMemory(s, a.text, now, origin);
+    } else if (a.type === 'log_time') {
+      s.sessions.push(manualSession(s, { title: a.title, minutes: a.minutes, date: a.date || todayISO(new Date(now)), taskId: a.taskId, spaceId: a.spaceId }, now));
     } else if (a.type === 'add_date') {
       s.dates.push({ id: uid('d'), title: a.title, date: a.date, ...(a.time ? { time: a.time } : {}), place: a.place || '', spaceId: a.spaceId, createdAt: now });
     } else if (a.type === 'add_cards') {
       for (const c of a.cards) s.cards.push(newCard(c, a.spaceId, now, origin));
     }
+  }
+
+  /* ---------- time records entered or corrected by hand ----------
+     A timer session is an observation; a hand-entered one is the user's report. Both count as time
+     spent, but only timer sessions say anything about pace against a plan, so manual ones are marked. */
+  function sessionFields(s, f) {
+    const minutes = Math.round(Number(f.minutes));
+    if (!(minutes >= 1 && minutes <= 1440)) throw new Error('时间请填 1–1440 分钟');
+    if (!validDate(f.date)) throw new Error('请选择日期');
+    const task = f.taskId ? s.tasks.find((t) => t.id === f.taskId) : null;
+    const title = cleanText(f.title, 150) || (task ? task.title : '');
+    if (!title) throw new Error('请填写做了什么');
+    return { title, minutes, date: f.date, taskId: task ? task.id : null, spaceId: task ? task.spaceId || null : s.spaces.some((x) => x.id === f.spaceId) ? f.spaceId : null,
+      hour: validTime(f.startTime) ? Number(f.startTime.slice(0, 2)) : null, startTime: validTime(f.startTime) ? f.startTime : null, note: cardText(f.note, 600) };
+  }
+  function manualSession(s, f, now) {
+    const v = sessionFields(s, f);
+    return { id: uid('s'), taskId: v.taskId, title: v.title, step: v.title, spaceId: v.spaceId, planned: v.minutes, actual: v.minutes, date: v.date, hour: v.hour, ...(v.startTime ? { startTime: v.startTime } : {}), endedAt: now, partial: false, manual: true, ...(v.note ? { note: v.note } : {}) };
+  }
+  function addSession(state, f, now) {
+    const s = clone(state);
+    s.sessions.push(manualSession(s, f, now));
+    return s;
+  }
+  /* Corrects a saved record. A timer session keeps its planned length; it is marked as edited. */
+  function updateSession(state, id, f) {
+    const s = clone(state);
+    const x = s.sessions.find((y) => y.id === id);
+    if (!x) throw new Error('这条记录已不存在');
+    const v = sessionFields(s, f);
+    Object.assign(x, { title: v.title, actual: v.minutes, date: v.date, taskId: v.taskId, spaceId: v.spaceId });
+    if (x.manual) { x.planned = v.minutes; x.step = v.title; }
+    else x.edited = true;
+    if (v.startTime) { x.startTime = v.startTime; x.hour = v.hour; } else if (x.manual) { delete x.startTime; x.hour = null; }
+    if (v.note) x.note = v.note; else delete x.note;
+    return s;
+  }
+  /* What the user writes down when a sitting ends: what was done and where it got stuck go on the
+     record of that sitting; where to pick up goes on the task, and is shown when it is next started. */
+  function wrapUp(state, f) {
+    const s = clone(state);
+    const session = f.sessionId ? s.sessions.find((x) => x.id === f.sessionId) : null;
+    const task = f.taskId ? s.tasks.find((x) => x.id === f.taskId) : null;
+    const did = cardText(f.did, 600), stuck = cardText(f.stuck, 600), next = cleanText(f.next, 300);
+    if (session) {
+      if (did) session.note = did; else delete session.note;
+      if (stuck) session.stuck = stuck; else delete session.stuck;
+    }
+    if (task) { if (next) task.next = next; else delete task.next; }
+    return s;
+  }
+
+  /* ---------- the week: where each task sits, what the week is for, how much fits ---------- */
+  /* Puts a task on a day, or into a week without a day. Its records and steps are left alone. */
+  function moveTask(state, taskId, target) {
+    const s = clone(state);
+    const task = s.tasks.find((t) => t.id === taskId);
+    if (!task) throw new Error('任务已不存在');
+    if (validDate(target.date)) { task.date = target.date; delete task.week; }
+    else if (validDate(target.week)) { task.date = null; task.week = weekStart(target.week); delete task.time; }
+    else { task.date = null; delete task.week; delete task.time; }
+    return s;
+  }
+  function setWeekPlan(state, monday, values) {
+    const s = clone(state);
+    const plan = { ...(s.weekPlans[monday] || {}) };
+    if (values.focus !== undefined) plan.focus = cardText(values.focus, 400);
+    if (values.capacity !== undefined) {
+      const n = values.capacity === null || values.capacity === '' ? null : Math.round(Number(values.capacity));
+      if (n !== null && !(n >= 0 && n <= 10080)) throw new Error('本周可投入请填 0–10080 分钟');
+      plan.capacity = n;
+    }
+    s.weekPlans[monday] = plan;
+    return s;
+  }
+  /* Planned minutes include finished tasks; recorded minutes come only from time records. They are
+     different facts, so neither is subtracted from the other. */
+  function weekSummary(state, monday) {
+    const end = addDays(monday, 6);
+    const plan = state.weekPlans[monday] || {};
+    const dated = state.tasks.filter((t) => t.date && t.date >= monday && t.date <= end);
+    const loose = state.tasks.filter((t) => !t.date && t.week === monday);
+    const daily = state.settings.prefs.dailyMinutes;
+    const capacity = plan.capacity != null ? plan.capacity : daily ? daily * 7 : null;
+    const planned = sum(dated, (t) => t.minutes) + sum(loose, (t) => t.minutes);
+    return {
+      focus: plan.focus || '', capacity, capacityIsDefault: plan.capacity == null,
+      scheduled: sum(dated, (t) => t.minutes), unscheduled: sum(loose, (t) => t.minutes), planned,
+      recorded: sum(state.sessions.filter((x) => x.date >= monday && x.date <= end), (x) => x.actual),
+      over: capacity != null && planned > capacity ? planned - capacity : 0,
+    };
+  }
+
+  /* ---------- reading a T计划 v3 export ----------
+     v3 kept tasks, time records and notes in other shapes. This maps what has a home in v4 and
+     reports what does not, so nothing is dropped silently. */
+  const isV3Export = (o) => isObject(o) && o.app === 'tplan' && o.version === undefined && Array.isArray(o.tasks) && (Array.isArray(o.notes) || Array.isArray(o.trees) || o.planningVersion !== undefined);
+  function convertV3(o) {
+    const s = emptyState();
+    const report = { tasks: 0, sessions: 0, reflections: 0, spaces: 0, weekPlans: 0, skippedTrees: Array.isArray(o.trees) ? o.trees.length : 0, skippedSessions: 0, skippedProposals: Array.isArray(o.proposals) ? o.proposals.length : 0 };
+    const sections = isObject(o.settings) && Array.isArray(o.settings.taskSections) ? o.settings.taskSections.filter((x) => isObject(x) && typeof x.id === 'string' && typeof x.name === 'string' && x.name.trim()) : [];
+    const spaceOf = {};
+    for (const sec of sections) {
+      let name = cleanText(sec.name, 20);
+      for (let n = 2; s.spaces.some((x) => x.name === name); n++) name = cleanText(sec.name, 17) + ' ' + n;
+      const sp = { id: uid('space'), name, color: SPACE_COLORS[s.spaces.length % SPACE_COLORS.length], type: 'study' };
+      s.spaces.push(sp); spaceOf[sec.id] = sp.id; report.spaces++;
+    }
+    const taskSpace = {};
+    for (const t of o.tasks) {
+      if (!isObject(t) || !cleanText(t.title, 150)) continue;
+      const task = { id: typeof t.id === 'string' && t.id ? 'v3_' + t.id : uid('t'), title: cleanText(t.title, 150), date: validDate(t.date) ? t.date : null, minutes: cleanMinutes(t.est, 30), spaceId: spaceOf[t.sectionId] || null,
+        done: !!t.done, doneAt: t.done ? Number(t.doneAt) || null : null, createdAt: Number(t.createdAt) || Date.now(), origin: 'v3' };
+      if (!task.date && validDate(t.week)) task.week = weekStart(t.week);
+      if (typeof t.next === 'string' && t.next.trim()) task.next = cleanText(t.next, 300);
+      taskSpace[t.id] = task;
+      s.tasks.push(task); report.tasks++;
+    }
+    for (const x of Array.isArray(o.sessions) ? o.sessions : []) {
+      const minutes = Math.round(Number(x && x.minutes));
+      if (!isObject(x) || !validDate(x.date) || !(minutes >= 1 && minutes <= 1440)) { report.skippedSessions++; continue; }
+      const task = taskSpace[x.taskId] || null;
+      const startMs = Number(x.start);
+      const started = Number.isFinite(startMs) && startMs > 1e11 ? new Date(startMs) : null;
+      const title = cleanText(x.title, 150) || (task ? task.title : '未命名记录');
+      const note = cardText(x.note, 600);
+      // v3 did not keep a planned length per record, so these say nothing about pace: they are kept as reports of time spent.
+      s.sessions.push({ id: uid('s'), taskId: task ? task.id : null, title, step: title, spaceId: task ? task.spaceId : null, planned: minutes, actual: minutes, date: x.date,
+        hour: started ? started.getHours() : null, ...(started ? { startTime: pad(started.getHours()) + ':' + pad(started.getMinutes()) } : {}), endedAt: Number(x.end) || startMs || Date.now(), partial: false, manual: true, origin: 'v3', ...(note ? { note } : {}) });
+      report.sessions++;
+    }
+    const addReflection = (date, text, at) => { const clean = cardText(text, 4000); if (validDate(date) && clean) { s.reflections.push({ id: uid('r'), date, text: clean, at: Number(at) || Date.now(), source: 'user' }); report.reflections++; } };
+    for (const n of Array.isArray(o.notes) ? o.notes : []) if (isObject(n)) addReflection(n.date, n.text, n.at);
+    for (const [key, entry] of Object.entries(isObject(o.reviewEntries) ? o.reviewEntries : {})) {
+      const date = (String(key).match(/\d{4}-\d{2}-\d{2}/) || [])[0];
+      if (isObject(entry)) addReflection(date, [entry.reflection, entry.next ? '下次从哪里继续：' + entry.next : ''].filter((x) => typeof x === 'string' && x.trim()).join('\n\n'), entry.updatedAt);
+    }
+    s.reflections.sort((a, b) => a.date.localeCompare(b.date) || a.at - b.at);
+    for (const [week, plan] of Object.entries(isObject(o.weekPlans) ? o.weekPlans : {})) {
+      if (!validDate(week) || !isObject(plan)) continue;
+      const focus = cardText(Array.isArray(plan.focus) ? plan.focus.join('\n') : plan.focus, 400);
+      const capacity = Number.isInteger(plan.capacityMin) && plan.capacityMin >= 0 && plan.capacityMin <= 10080 ? plan.capacityMin : null;
+      if (focus || capacity !== null) { s.weekPlans[weekStart(week)] = { focus, capacity }; report.weekPlans++; }
+    }
+    const cap = Math.round(Number(isObject(o.settings) && o.settings.cap));
+    if (cap >= 1 && cap <= 960) s.settings.prefs.dailyMinutes = cap;
+    s.settings.prefs.onboarded = true;
+    return { state: normalize(s), report };
   }
 
   /* ---------- key dates: exams and deadlines, counted down ---------- */
@@ -586,7 +749,7 @@
   }
   function buildProfile(state, today) {
     const sessions = state.sessions;
-    const full = sessions.filter((x) => !x.partial);
+    const full = sessions.filter((x) => !x.partial && !x.manual && !x.edited); // only untouched timer sessions compare actual with planned
     const profile = { sessionsRecorded: sessions.length };
     const ratio = (list) => Math.round((sum(list, (x) => x.actual) / sum(list, (x) => x.planned)) * 100) / 100;
     if (full.length >= 3) {
@@ -601,7 +764,7 @@
     }
     if (sessions.length >= 5) {
       const blocks = {};
-      for (const x of sessions) blocks[blockOf(x.hour)] = (blocks[blockOf(x.hour)] || 0) + x.actual;
+      for (const x of sessions) if (Number.isInteger(x.hour)) blocks[blockOf(x.hour)] = (blocks[blockOf(x.hour)] || 0) + x.actual;
       profile.focusMinutesByTimeOfDay = blocks;
     }
     const days = new Set(sessions.map((x) => x.date));
@@ -640,7 +803,7 @@
         return { title: g.title, deadline: g.deadline, milestones: g.milestones.map((m) => m.title), tasksDone: tasks.filter((t) => t.done).length, tasksTotal: tasks.length };
       }),
       openTasks: state.tasks.filter((t) => !t.done).slice(0, 200).map((t) => ({
-        taskId: t.id, title: t.title, date: t.date, ...(t.time ? { time: t.time } : {}), minutes: t.minutes, space: spaceName(t.spaceId),
+        taskId: t.id, title: t.title, date: t.date, ...(t.time ? { time: t.time } : {}), ...(t.week ? { undatedInWeekOf: t.week } : {}), ...(t.next ? { continueFrom: t.next } : {}), minutes: t.minutes, space: spaceName(t.spaceId),
         ...(t.steps ? { stepsDone: t.steps.filter((x) => x.done).length, stepsTotal: t.steps.length } : {}),
       })),
       recentlyDone: state.tasks.filter((t) => t.done && t.doneAt && toDay(t.doneAt) >= recentCutoff).slice(-60).map((t) => ({
@@ -650,6 +813,7 @@
       recentReflections: state.reflections.slice(-5).map((r) => ({ date: r.date, text: r.text.slice(0, 600) })),
       keyDates: upcomingDates(state, today).slice(0, 12).map((d) => ({ title: d.title, date: d.date, ...(d.time ? { time: d.time } : {}), daysLeft: d.daysLeft, kind: d.kind === 'goal' ? 'goalDeadline' : 'examOrDeadline', space: spaceName(d.spaceId) })),
       ...(state.cards.length ? { reviewCards: { ...cardStats(state, today), bySpace: state.spaces.map((x) => ({ space: x.name, ...cardStats(state, today, x.id) })).filter((x) => x.total).map((x) => ({ space: x.space, total: x.total, dueToday: x.dueToday })) } } : {}),
+      thisWeek: (() => { const w = weekSummary(state, weekStart(today)); return { focus: w.focus || null, capacityMinutes: w.capacity, plannedMinutes: w.planned, undatedMinutes: w.unscheduled, recordedMinutes: w.recorded }; })(),
       timerRunning: !!state.timer,
       history: state.messages.filter((m) => thread === undefined || (m.spaceId || null) === thread).slice(-12).map((m) => ({ role: m.role, text: m.text.slice(0, 1500) })),
       message: text,
@@ -661,7 +825,7 @@
     const from = addDays(today, -Math.min(90, Math.max(1, Math.round(Number(days)) || 14)));
     return {
       from, to: today,
-      sessions: state.sessions.filter((x) => x.date >= from).slice(-200).map((x) => ({ date: x.date, startHour: x.hour, task: x.title, step: x.step, planned: x.planned, actual: x.actual, partial: x.partial })),
+      sessions: state.sessions.filter((x) => x.date >= from).slice(-200).map((x) => ({ date: x.date, startHour: x.hour, task: x.title, step: x.step, planned: x.planned, actual: x.actual, partial: x.partial, ...(x.manual ? { enteredByHand: true } : {}), ...(x.note ? { did: x.note } : {}), ...(x.stuck ? { stuck: x.stuck } : {}) })),
       tasks: state.tasks.filter((t) => t.date && t.date >= from && t.date <= today).slice(-200).map((t) => ({ title: t.title, date: t.date, minutes: t.minutes, done: t.done, feel: t.feel || null })),
     };
   }
@@ -744,7 +908,7 @@
 
   return {
     VERSION, SPACE_COLORS, SPACE_TYPES, logMetric,
-    clone, uid, todayISO, validDate, validTime, CARD_INTERVALS, newCard, dueCards, reviewCard, cardStats, upcomingDates, daysBetween, editTaskSteps, toggleTask, addDays, weekStart,
+    clone, uid, todayISO, validDate, validTime, addSession, updateSession, wrapUp, moveTask, setWeekPlan, weekSummary, isV3Export, convertV3, CARD_INTERVALS, newCard, dueCards, reviewCard, cardStats, upcomingDates, daysBetween, editTaskSteps, toggleTask, addDays, weekStart,
     emptyState, normalize, validateActions, resolveProposal, editProposal, addMemory,
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,
     buildProfile, buildContext, history, parseLine, splitIntoSteps, localReply,
