@@ -17,7 +17,8 @@
     const key = platform.loadKey(state.settings.agent.provider, state.settings.agent.provider);
     if (key) platform.saveKey(state.settings.agent.provider, key, state.settings.agent.provider);
   } catch { /* keys stay as they were */ }
-  const ui = { panelSection: 'review', mode: 'planner', space: null, tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0, search: '', abort: null };
+  const ui = { panelSection: 'review', mode: state.settings.prefs.onboarded ? 'home' : 'planner', // the first-run interview happens in the chat
+     space: null, tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0, search: '', abort: null };
   const library = new Map(); // files read during this session, by name; kept out of saved state because they are large
   let pip = null; // floating timer window, when open
   let dueNotified = null;
@@ -256,7 +257,8 @@
         h('span', { class: 'avatar', style: 'background:' + color }, letter),
         h('span', { class: 'rail-label' }, name));
     $('#rail').replaceChildren(
-      item(null, '全部', 'var(--ink)', '全'),
+      h('button', { class: 'rail-item' + (ui.mode === 'home' || (ui.mode === 'planner' && ui.space === null) ? ' active' : ''), title: '工作台：今天、本周和各个分区的概况', 'aria-label': '工作台', onclick: () => { ui.mode = 'home'; render(); } },
+        h('span', { class: 'avatar', style: 'background:var(--ink)' }, '台'), h('span', { class: 'rail-label' }, '工作台')),
       h('button', { class: 'rail-item' + (ui.mode === 'timetable' ? ' active' : ''), title: '课表', 'aria-label': '课表', onclick: () => { ui.mode = 'timetable'; render(); } }, h('span', { class: 'avatar', style: 'background:#567897' }, '课'), h('span', { class: 'rail-label' }, '课表')),
       h('button', { class: 'rail-item' + (ui.mode === 'week' ? ' active' : ''), title: '本周安排：七天的任务、周重点和可投入时间', 'aria-label': '本周安排', onclick: () => { ui.mode = 'week'; render(); } }, h('span', { class: 'avatar', style: 'background:#8a6f5a' }, '周'), h('span', { class: 'rail-label' }, '本周')),
       h('button', { class: 'rail-item', title: '回看：每周的专注时间、完成情况和反思', 'aria-label': '回看', onclick: () => openSettings('review') }, h('span', { class: 'avatar', style: 'background:#7a8496' }, icon('bars')), h('span', { class: 'rail-label' }, '回看')),
@@ -597,6 +599,7 @@
     $('#list').replaceChildren(
       h('header', { class: 'list-head' },
         h('h2', {}, current ? current.name : '全部安排'),
+        current ? null : h('button', { class: 'text-btn', title: '回到工作台', onclick: () => { ui.mode = 'home'; render(); } }, '‹ 工作台'),
         current ? h('button', { class: 'icon-btn', 'aria-label': '编辑分区', title: '编辑分区', onclick: () => openSpaceDialog(current) }, icon('gear')) : null),
       summary(todayNumbers(inSpace)),
       h('label', { class: 'list-search' }, icon('search'), h('input', { type: 'search', value: ui.search, placeholder: '搜索任务（包括已完成的）', 'aria-label': '搜索任务', maxLength: 60,
@@ -969,6 +972,7 @@
 
   async function addFiles(fileList) {
     if (ui.mode === 'timetable') { timetable.openImport(fileList); return; }
+    if (ui.mode === 'home' || ui.mode === 'week') { ui.mode = 'planner'; ui.space = null; } // files go to the general chat
     const files = [...fileList].slice(0, 6);
     if (!files.length) return;
     if (files.some((f) => /课表|课程表|timetable|schedule/i.test(f.name))) toast('这像是课表。聊天里只会当作资料读，不会排进日程', { label: '去课表导入', run: () => {
@@ -1155,6 +1159,10 @@
     if (platform.updateTimer) platform.updateTimer(view ? { title: view.task.title, step: view.step.title, index: view.index, total: view.total, running: view.running, due: view.due, remainingMs: view.remainingMs, at: Date.now() } : null);
     if (!view) return;
     const doc = pip ? pip.document : document;
+    for (const mirror of document.querySelectorAll('.clock-mirror')) { // the workbench shows the same clock
+      mirror.textContent = view.due ? '+' + clock(view.remainingMs) : clock(view.remainingMs);
+      mirror.classList.toggle('due', view.due);
+    }
     const time = doc.getElementById('dockTime');
     if (!time) return;
     time.textContent = view.due ? '+' + clock(view.remainingMs) : clock(view.remainingMs);
@@ -1715,6 +1723,140 @@
       addDate: (title) => { const sp = spaceForCourse(title); openDateDialog(null, { title: title + ' 考试', spaceId: sp ? sp.id : null }); },
       openSpace: (id) => { ui.mode = 'planner'; ui.space = id; render(); },
     } });
+  /* ---------- the workbench: one page that answers "what now, what today, how is the week going" ----------
+     Everything here is read from the same data as the other pages; nothing is stored for it. */
+  function renderHome() {
+    const t = today();
+    const now = new Date();
+    const clockNow = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    const monday = C.weekStart(t);
+    const all = () => true;
+    const old = $('.home-scroll');
+    const scrollAt = old ? old.scrollTop : 0;
+    const typing = old ? old.querySelector('.home-ask input') : null;
+    const kept = typing ? typing.value : '';
+    const open = (mode, spaceId) => { ui.mode = mode; if (spaceId !== undefined) ui.space = spaceId; render(); };
+    const ask = (text) => { ui.mode = 'planner'; ui.space = null; render(); send(text); };
+    const card = (title, action, ...body) => h('section', { class: 'home-card' }, h('header', {}, h('h3', {}, title), action || null), body);
+    const link = (label, onclick) => h('button', { class: 'text-btn', onclick }, label);
+
+    // --- now: the running timer, or the one thing to start
+    const view = C.timerView(state, Date.now());
+    const lesson = nextClass(null);
+    const todays = state.tasks.filter((x) => !x.done && x.date && x.date <= t);
+    const overdue = todays.filter((x) => x.date < t);
+    const pick = todays.filter((x) => x.date === t && x.time && x.time >= clockNow).sort((a, b) => a.time.localeCompare(b.time))[0]
+      || todays.filter((x) => x.next).sort(byWhen)[0] || [...todays].sort((a, b) => (b.date === t) - (a.date === t) || byWhen(a, b))[0] || null;
+    const lessonLine = lesson ? h('button', { class: 'home-lesson', onclick: () => timetable.details(lesson) },
+      h('b', { class: lesson.running ? 'live' : '' }, lesson.running ? '正在上课' : lesson.date === t ? '下一节课 ' + lesson.startTime : '下一节课 ' + dateLabel(lesson.date).split(' ')[0] + ' ' + lesson.startTime),
+      ' ' + lesson.title + (lesson.room ? ' · ' + lesson.room : '') + (lesson.running ? ' · 到 ' + lesson.endTime : '')) : null;
+    const hero = view ? h('section', { class: 'home-hero timing' },
+      h('div', { class: 'home-hero-main' }, h('span', { class: 'sub' }, (view.running ? '正在计时' : '已暂停') + ' · 第 ' + (view.index + 1) + '/' + view.total + ' 段'),
+        h('strong', {}, view.task.title), view.step.title !== view.task.title ? h('span', {}, view.step.title) : null,
+        view.task.next ? h('span', { class: 'sub' }, '上次停在：' + view.task.next) : null, lessonLine),
+      h('div', { class: 'home-clock clock-mirror' }, clock(view.remainingMs)),
+      h('div', { class: 'home-hero-actions' },
+        view.running ? h('button', { class: 'btn outline slim', onclick: () => commit(C.pauseTimer(state, Date.now())) }, icon('pause'), '暂停') : h('button', { class: 'btn outline slim', onclick: () => commit(C.resumeTimer(state, Date.now())) }, icon('play'), '继续'),
+        h('button', { class: 'btn dark', onclick: finishCurrentStep }, icon('check'), view.index === view.total - 1 ? '完成' : '下一段'),
+        h('button', { class: 'btn ghost', onclick: stopTimerNow }, '结束')))
+      : h('section', { class: 'home-hero' },
+        h('div', { class: 'home-hero-main' }, h('span', { class: 'sub' }, pick ? (pick.date < t ? '有一件过期的事' : pick.time ? '接下来 ' + pick.time : '现在可以做') : '今天没有待办'),
+          pick ? h('button', { class: 'home-pick', title: '打开任务', onclick: () => openTaskDialog(pick) }, pick.title) : h('strong', {}, '想推进点什么？'),
+          pick ? h('span', { class: 'sub' }, minutesLabel(pick.minutes) + (pick.steps ? ' · ' + pick.steps.filter((x) => x.done).length + '/' + pick.steps.length + ' 段' : '') + (space(pick.spaceId) ? ' · ' + space(pick.spaceId).name : '')) : h('span', { class: 'sub' }, '在下面写一件事，或者让助手帮你安排。'),
+          pick && pick.next ? h('span', { class: 'home-next' }, '从这里继续：' + pick.next) : null, lessonLine),
+        h('div', { class: 'home-hero-actions' },
+          pick ? h('button', { class: 'btn dark', onclick: () => beginTimer(pick.id) }, icon('play'), '开始计时') : h('button', { class: 'btn dark', onclick: () => ask('帮我规划今天') }, '让助手规划今天'),
+          overdue.length ? h('button', { class: 'btn outline slim', title: '把过期未完成的任务都改到今天', onclick: () => undoable(overdue.length + ' 项已改到今天', () => change((s) => { for (const x of s.tasks) if (!x.done && x.date && x.date < t) { x.date = t; delete x.time; } })) }, overdue.length + ' 项过期 → 改到今天') : null));
+
+    // --- today
+    const n = todayNumbers(all);
+    const todayTasks = state.tasks.filter((x) => x.date && (x.date === t || (x.date < t && !x.done))).sort(byWhen);
+    const budget = state.settings.prefs.dailyMinutes || null;
+    const bar = (value, total, cls) => h('div', { class: 'home-bar ' + (cls || '') }, h('i', { style: 'width:' + Math.min(100, total ? (value / total) * 100 : 0).toFixed(1) + '%' }));
+    const quick = h('input', { class: 'quick-add', placeholder: '加一件今天要做的事，按回车', maxLength: 150, 'aria-label': '添加今天的任务', onkeydown: (e) => {
+      if (e.key !== 'Enter' || e.isComposing || !e.target.value.trim()) return;
+      const title = e.target.value.trim();
+      if (change((s) => s.tasks.push({ id: C.uid('t'), title, date: t, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: Date.now(), origin: 'user' }))) { const again = $('.home-today .quick-add'); if (again) again.focus(); }
+    } });
+    const todayCard = h('section', { class: 'home-card home-today' },
+      h('header', {}, h('h3', {}, '今天 · ' + plainDate(t) + ' 周' + '日一二三四五六'[now.getDay()]), link('全部任务 ›', () => open('planner', null))),
+      h('div', { class: 'home-figures' },
+        h('div', {}, h('strong', {}, n.done + ' / ' + todayTasks.length), h('small', {}, '完成 / 今天的事')),
+        h('div', {}, h('strong', {}, minutesLabel(n.focus)), h('small', {}, '今天已记录')),
+        h('div', { class: n.over ? 'over' : '' }, h('strong', {}, minutesLabel(n.planned) + (budget ? ' / ' + minutesLabel(budget) : '')), h('small', {}, n.over ? '已安排，超出 ' + minutesLabel(n.over) : budget ? '已安排 / 每天可安排' : '已安排'), budget ? bar(n.planned, budget, n.over ? 'over' : '') : null)),
+      timetable.daily(t).slice(1), todayTasks.length ? todayTasks.map(taskRow) : h('p', { class: 'empty' }, '今天还没有任务。'), quick);
+
+    // --- the week
+    const week = C.weekSummary(state, monday);
+    const days = Array.from({ length: 7 }, (_, i) => C.addDays(monday, i));
+    const perDay = days.map((d) => ({ d, planned: state.tasks.filter((x) => x.date === d).reduce((a, x) => a + x.minutes, 0), recorded: state.sessions.filter((x) => x.date === d).reduce((a, x) => a + x.actual, 0) }));
+    const top = Math.max(60, ...perDay.map((x) => Math.max(x.planned, x.recorded)));
+    const weekCard = card('本周', link('本周安排 ›', () => open('week')),
+      week.focus ? h('ul', { class: 'home-focus' }, week.focus.split('\n').filter((x) => x.trim()).slice(0, 3).map((x) => h('li', {}, x))) : h('button', { class: 'home-hint', onclick: () => open('week') }, '还没有写这一周的重点，去写 1–3 件'),
+      h('div', { class: 'home-week', role: 'img', 'aria-label': '本周每天的计划和已记录时长' }, perDay.map((x, i) => h('div', { class: 'home-day' + (x.d === t ? ' today' : ''), title: plainDate(x.d) + '：计划 ' + minutesLabel(x.planned) + '，已记录 ' + minutesLabel(x.recorded) },
+        h('div', { class: 'home-day-bars' }, h('i', { class: 'plan', style: 'height:' + ((x.planned / top) * 100).toFixed(1) + '%' }), h('i', { class: 'done', style: 'height:' + ((x.recorded / top) * 100).toFixed(1) + '%' })),
+        h('small', {}, '一二三四五六日'[i])))),
+      h('p', { class: 'sub' }, '浅色是计划，深色是已记录。本周计划 ' + minutesLabel(week.planned) + (week.capacity != null ? ' / 可投入 ' + minutesLabel(week.capacity) : '') + '，已记录 ' + minutesLabel(week.recorded) + (week.unscheduled ? '，其中 ' + minutesLabel(week.unscheduled) + ' 还没定哪天' : '') + '。'),
+      week.over ? h('p', { class: 'home-warn' }, '计划比可投入多 ' + minutesLabel(week.over) + '，考虑挪走或删减一些。') : null);
+
+    // --- countdowns and cards
+    const dates = C.upcomingDates(state, t).slice(0, 4);
+    const datesCard = card('倒计时', link('+ 考试 / 截止日期', () => openDateDialog(null)),
+      dates.length ? dates.map((d) => h('button', { class: 'next-row', onclick: () => { if (d.kind === 'goal') { ui.tabs.all = 'goals'; open('planner', null); } else openDateDialog(state.dates.find((x) => x.id === d.id)); } },
+        h('b', { class: d.daysLeft <= 7 ? 'soon' : '' }, d.daysLeft === 0 ? '今天' : String(d.daysLeft), d.daysLeft === 0 ? null : h('small', {}, ' 天')),
+        h('span', { class: 'next-text' }, d.title, h('small', {}, plainDate(d.date) + (d.time ? ' ' + d.time : '') + (d.place ? ' · ' + d.place : '') + (d.kind === 'goal' ? ' · 目标期限' : '') + (space(d.spaceId) ? ' · ' + space(d.spaceId).name : '')))))
+        : h('p', { class: 'empty' }, '记下考试、报名或作业的截止日期，这里会倒数。'));
+    const cards = C.cardStats(state, t);
+    const cardsCard = cards.total ? card('复习卡片', link('全部卡片 ›', () => { ui.tabs.all = 'cards'; open('planner', null); }),
+      h('div', { class: 'home-figures' },
+        h('div', { class: cards.dueToday ? 'accent' : '' }, h('strong', {}, String(cards.dueToday)), h('small', {}, '今天到期')),
+        h('div', {}, h('strong', {}, String(cards.total)), h('small', {}, '共有卡片')),
+        h('div', {}, h('strong', {}, cards.recentAnswers ? cards.recentRemembered + ' / ' + cards.recentAnswers : '—'), h('small', {}, '近 14 天记住 / 回答'))),
+      cards.dueToday ? h('button', { class: 'btn dark', onclick: () => { ui.space = null; startReview(); } }, '开始复习 ' + cards.dueToday + ' 张') : h('p', { class: 'sub' }, '今天没有到期的卡片。')) : null;
+
+    // --- habits, only when there are any
+    const habitsCard = state.habits.length ? card('今天的习惯', h('span', { class: 'sub' }, state.habits.filter((x) => x.log[t]).length + ' / ' + state.habits.length), state.habits.map(habitRow)) : null;
+
+    // --- spaces
+    const spaceTile = (sp) => {
+      const openTasks = state.tasks.filter((x) => x.spaceId === sp.id && !x.done);
+      const due = C.dueCards(state, t, sp.id).length;
+      const cls = sp.course ? nextClass(sp) : null;
+      const date = C.upcomingDates(state, t, sp.id)[0];
+      const lines = [openTasks.length ? openTasks.length + ' 项待办' : '没有待办', due ? due + ' 张卡片到期' : '', date ? date.title + ' 还有 ' + date.daysLeft + ' 天' : '',
+        cls ? (cls.running ? '正在上课' : '下一节 ' + (cls.date === t ? '今天' : dateLabel(cls.date).split(' ')[0]) + ' ' + cls.startTime) : ''].filter(Boolean);
+      return h('button', { class: 'home-space', onclick: () => open('planner', sp.id) }, h('span', { class: 'avatar', style: 'background:' + sp.color }, sp.name.slice(0, 1)),
+        h('span', { class: 'home-space-text' }, h('strong', {}, sp.name), h('small', {}, lines.join(' · '))));
+    };
+    const spacesCard = card('分区', link('+ 新分区', () => openSpaceDialog(null)), h('div', { class: 'home-spaces' }, state.spaces.map(spaceTile)));
+
+    // --- assistant
+    const lastReply = [...state.messages].reverse().find((m) => m.role === 'assistant' && (m.spaceId || null) === null && m.text);
+    const pending = state.messages.filter((m) => m.proposal && m.proposal.status === 'pending').length;
+    const askBox = h('input', { value: kept, maxLength: 4000, placeholder: modelName() ? '对助手说点什么，回车发送' : '本地模式：写「单片机 2小时」这样的一行，回车', 'aria-label': '对助手说',
+      onkeydown: (e) => { if (e.key === 'Enter' && !e.isComposing && e.target.value.trim()) ask(e.target.value.trim()); } });
+    const assistantCard = card('规划助手', link('打开对话 ›', () => open('planner', null)),
+      pending ? h('button', { class: 'home-warn as-button', onclick: () => open('planner', null) }, '有 ' + pending + ' 份提议在等你确认') : null,
+      lastReply ? h('p', { class: 'home-reply' }, lastReply.text.slice(0, 160) + (lastReply.text.length > 160 ? '…' : '')) : h('p', { class: 'sub' }, modelName() ? '告诉我你的任务、目标或者困难，我先看你的安排和记录再提议。' : '还没有连接 AI 模型，现在只能把每一行变成任务。'),
+      h('div', { class: 'home-ask' }, askBox, h('button', { class: 'send', 'aria-label': '发送', onclick: () => { if (askBox.value.trim()) ask(askBox.value.trim()); } }, icon('send'))),
+      h('div', { class: 'starters' }, STARTERS.map((text) => h('button', { class: 'pill soft', onclick: () => ask(text) }, text)),
+        !modelName() ? h('button', { class: 'pill soft', onclick: () => openSettings('model') }, icon('plus'), '连接模型') : null));
+
+    const hour = now.getHours();
+    const hello = hour < 5 ? '夜深了' : hour < 11 ? '早上好' : hour < 13 ? '中午好' : hour < 18 ? '下午好' : '晚上好';
+    const schedule = T.normalize(state.schedule).settings;
+    const weekNo = T.dateOK(schedule.semesterStart) && monday >= schedule.semesterStart ? Math.round(C.daysBetween(schedule.semesterStart, monday) / 7) + 1 : 0;
+    $('#main').replaceChildren(h('div', { class: 'home-scroll' },
+      h('header', { class: 'home-head' }, h('div', {}, h('h2', {}, (state.settings.prefs.name ? state.settings.prefs.name + '，' : '') + hello), h('p', { class: 'sub' }, plainDate(t) + ' 周' + '日一二三四五六'[now.getDay()] + (weekNo && (!schedule.weekCount || weekNo <= schedule.weekCount) ? ' · 第 ' + weekNo + ' 教学周' : ''))),
+        h('div', { class: 'head-actions' }, h('button', { class: 'pill soft', onclick: () => openTaskDialog(null) }, icon('plus'), h('span', {}, '新建任务')), h('button', { class: 'pill soft', onclick: () => openSessionDialog(null) }, icon('plus'), h('span', {}, '补记时间')))),
+      hero,
+      h('div', { class: 'home-grid' }, h('div', { class: 'home-col' }, todayCard, habitsCard), h('div', { class: 'home-col' }, weekCard, datesCard, cardsCard), h('div', { class: 'home-col' }, assistantCard, spacesCard))));
+    $('.home-scroll').scrollTop = scrollAt;
+    tick();
+  }
+  // The workbench shows the time of day (the class in progress, what comes next), so it is redrawn each minute when nothing is being typed.
+  setInterval(() => { if (ui.mode === 'home' && !$('#dialog').open && !$('#panel').open && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) renderHome(); }, 60000);
+
   /* ---------- the week page: seven days, the week's undated tasks, its focus and capacity ---------- */
   function renderWeek() {
     const t = today();
@@ -1793,10 +1935,11 @@
   }
 
   function render() {
+    if (ui.mode === 'home') ui.space = null; // the workbench is about everything, not one space
     renderRail();
     renderList();
-    $('#shell').classList.toggle('timetable-mode', ui.mode === 'timetable' || ui.mode === 'week');
-    if (ui.mode === 'timetable') timetable.render(); else if (ui.mode === 'week') renderWeek(); else renderChat();
+    $('#shell').classList.toggle('timetable-mode', ui.mode === 'timetable' || ui.mode === 'week' || ui.mode === 'home');
+    if (ui.mode === 'timetable') timetable.render(); else if (ui.mode === 'week') renderWeek(); else if (ui.mode === 'home') renderHome(); else renderChat();
     renderDock();
     if ($('#panel').open && panelDraft) openSettingsDialog(panelDraft); // keep the open settings panel in step with the data
   }
