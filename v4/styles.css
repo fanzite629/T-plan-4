@@ -659,3 +659,14 @@ body { padding: 14px; gap: 0; }
 @media (max-width: 1100px) { .home-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .home-grid .home-col:first-child { grid-column: 1 / -1; } }
 @media (max-width: 680px) { .home-scroll { padding: 14px; } .home-grid { grid-template-columns: minmax(0, 1fr); } .home-clock { font-size: 32px; } }
 .home-head .head-actions .pill span { display: inline; }
+
+/* ===== quick date and time ===== */
+.when-help { display: flex; flex-direction: column; gap: 6px; margin-top: -6px; }
+.when-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.when-chip { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--list); font-size: 12.5px; color: var(--t2); white-space: nowrap; }
+.when-chip:hover { border-color: var(--ink); color: var(--text); }
+.when-sep { width: 1px; height: 16px; background: var(--line); margin: 0 2px; }
+.when-quick { flex: 1; min-width: 190px; padding: 6px 10px; border-radius: 10px; border: 1px dashed var(--line); background: transparent; font-size: 13px; color: var(--text); }
+.when-quick:focus { outline: 0; border-style: solid; border-color: var(--ink); background: var(--panel); }
+.when-note { font-size: 12.5px; }
+.when-quick { flex: 1 1 100%; }
