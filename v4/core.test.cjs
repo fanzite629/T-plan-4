@@ -557,3 +557,93 @@ test('dates and times are read the way they are written, and nothing is guessed'
   assert.deepEqual(C.parseLine('做第2题', TODAY), { type: 'add_task', title: '做第2题', date: null, minutes: 30, space: null });
   assert.deepEqual(C.parseLine('复习第3章 明天下午3点 1.5小时', TODAY), { type: 'add_task', title: '复习第3章', date: '2026-11-15', time: '15:00', minutes: 90, space: null });
 });
+
+test('the longer view sums recorded time by day, week and space, and never invents any', () => {
+  const s = C.emptyState(); // TODAY is Saturday 2026-11-14; its week starts Monday 2026-11-09
+  const add = (date, actual, spaceId) => s.sessions.push({ id: 'x' + s.sessions.length, taskId: null, title: 'x', step: 'x', spaceId, planned: actual, actual, date, hour: 9, endedAt: 1, partial: false });
+  add(TODAY, 30, 'space_1'); add(TODAY, 20, 'space_2'); add('2026-11-10', 40, 'space_1'); add('2026-11-03', 60, null); // last four weeks
+  add('2026-10-10', 90, 'space_2'); add('2026-10-12', 15, 'gone');                                                  // the four weeks before
+  add('2026-01-01', 500, 'space_1');                                                                                // too old for any of the views
+  const t = C.trajectory(s, TODAY);
+  assert.equal(t.heat.length, 140);
+  assert.deepEqual([t.heat[0].date, t.heat[139].date], ['2026-06-29', '2026-11-15']);
+  assert.deepEqual(t.heat.filter((d) => d.minutes).map((d) => [d.date, d.minutes]), [['2026-10-10', 90], ['2026-10-12', 15], ['2026-11-03', 60], ['2026-11-10', 40], [TODAY, 50]]);
+  assert.equal(t.heat[139].minutes, null); // tomorrow has not happened: no value, not zero
+  assert.equal(t.recordedDays, 5);
+  assert.deepEqual(t.weeks.slice(-2).map((w) => [w.monday, w.minutes, w.activeDays]), [['2026-11-02', 60, 1], ['2026-11-09', 90, 2]]);
+  assert.equal(t.weeks.length, 12);
+  // One axis per space with time in either period; a record whose space is gone counts as unfiled.
+  assert.deepEqual(t.balance.axes.map((a) => [a.name, a.recent, a.previous]), [['项目', 20, 90], ['未分区', 60, 15], ['学习', 70, 0]]);
+  assert.deepEqual([t.balance.recentTotal, t.balance.previousTotal], [150, 105]);
+  // With nothing recorded the axes are padded to three so the shape can be drawn, all at zero.
+  const empty = C.trajectory(C.emptyState(), TODAY);
+  assert.deepEqual([empty.balance.axes.length, empty.balance.recentTotal, empty.recordedDays], [3, 0, 0]);
+  const two = C.emptyState(); two.spaces = two.spaces.slice(0, 2);
+  assert.equal(C.trajectory(two, TODAY).balance, null);
+});
+
+test('money: income adds, spending takes away, and what was not spent only fills the piggy bank', () => {
+  let s = C.emptyState();
+  s = C.setMoneySettings(s, { opening: '1000', monthly: '1500' });
+  s = C.addMoney(s, { kind: 'out', amount: 15, date: TODAY, category: '餐饮', note: '奶茶', time: '10:00' }, 1);
+  s = C.addMoney(s, { kind: 'in', amount: '200', date: TODAY, category: '兼职', time: '12:00' }, 2);
+  s = C.addMoney(s, { kind: 'out', amount: 300.456, date: TODAY, category: '购物', time: '15:00' }, 3);
+  s = C.addMoney(s, { kind: 'saved', amount: 15, date: TODAY, category: '餐饮', note: '奶茶' }, 4);
+  s = C.addMoney(s, { kind: 'out', amount: 50, date: '2026-11-12', category: '交通' }, 5);
+  s = C.addMoney(s, { kind: 'out', amount: 80, date: '2026-10-30', category: '餐饮' }, 6); // last month
+  const m = C.moneySummary(s, TODAY);
+  assert.equal(m.balance, 754.54); // 1000 − 15 + 200 − 300.46 − 50 − 80; the 15 not spent changes nothing
+  assert.deepEqual(m.today, { in: 200, out: 315.46 });
+  assert.deepEqual(m.month, { in: 200, out: 365.46, net: -165.46, saved: 15, savedCount: 1 });
+  assert.deepEqual(m.budget, { monthly: 1500, spent: 365.46, left: 1134.54, daysLeft: 17, perDay: 66.74, over: 0 });
+  assert.deepEqual(m.piggy, { total: 15, count: 1 });
+  // Without a monthly allowance there is no budget; overspending is reported, not hidden.
+  assert.equal(C.moneySummary(C.setMoneySettings(s, { monthly: '' }), TODAY).budget, null);
+  assert.deepEqual([C.moneySummary(C.setMoneySettings(s, { monthly: 300 }), TODAY).budget.over, C.moneySummary(C.setMoneySettings(s, { monthly: 300 }), TODAY).budget.perDay], [65.46, 0]);
+  // An opening date leaves earlier entries listed but out of the balance.
+  assert.equal(C.moneySummary(C.setMoneySettings(s, { openingDate: '2026-11-01' }), TODAY).balance, 834.54);
+  assert.throws(() => C.addMoney(s, { kind: 'out', amount: 0, date: TODAY }, 1), /大于 0/);
+  assert.throws(() => C.addMoney(s, { kind: 'gift', amount: 5, date: TODAY }, 1), /收入、支出/);
+  assert.throws(() => C.updateMoney(s, 'gone', { kind: 'out', amount: 5, date: TODAY }), /已不存在/);
+  const id = s.money.entries[0].id;
+  assert.equal(C.moneySummary(C.updateMoney(s, id, { kind: 'out', amount: 25, date: TODAY, category: '餐饮' }), TODAY).balance, 744.54);
+  assert.equal(C.normalize(C.clone(s)).money.entries.length, 6);
+  // The assistant only sees money when the user allows it.
+  assert.equal(C.buildContext(s, TODAY, 'hi').money, undefined);
+  assert.equal(C.buildContext(C.setMoneySettings(s, { share: true }), TODAY, 'hi').money.balance, 754.54);
+});
+
+test('money: the balance is drawn as candles that follow the entries in order', () => {
+  let s = C.setMoneySettings(C.emptyState(), { opening: 1000 });
+  s = C.addMoney(s, { kind: 'out', amount: 50, date: '2026-11-12', category: '交通' }, 1);
+  s = C.addMoney(s, { kind: 'out', amount: 300, date: TODAY, category: '购物', time: '15:00' }, 2); // written first, happened last
+  s = C.addMoney(s, { kind: 'in', amount: 200, date: TODAY, category: '兼职', time: '12:00' }, 3);
+  s = C.addMoney(s, { kind: 'out', amount: 15, date: TODAY, category: '餐饮', time: '10:00' }, 4);
+  s = C.addMoney(s, { kind: 'saved', amount: 99, date: TODAY, category: '购物' }, 5);
+  const days = C.moneyCandles(s, TODAY, 'day', 3);
+  assert.deepEqual(days.map((c) => [c.start, c.open, c.close, c.high, c.low, c.in, c.out, c.entries]), [
+    ['2026-11-12', 1000, 950, 1000, 950, 0, 50, 1],
+    ['2026-11-13', 950, 950, 950, 950, 0, 0, 0],
+    [TODAY, 950, 835, 1135, 835, 200, 315, 3], // 950 → 935 → 1135 → 835
+  ]);
+  const weeks = C.moneyCandles(s, TODAY, 'week', 2);
+  assert.deepEqual(weeks.map((c) => [c.start, c.end, c.open, c.close, c.high, c.low]), [['2026-11-02', '2026-11-08', 1000, 1000, 1000, 1000], ['2026-11-09', TODAY, 1000, 835, 1135, 835]]);
+  const flow = C.moneyFlow(s, '2026-11-01', TODAY);
+  assert.deepEqual(flow.out.items.map((x) => [x.category, x.amount]), [['购物', 300], ['交通', 50], ['餐饮', 15]]);
+  assert.deepEqual([flow.out.total, flow.in.total, flow.saved.total], [365, 200, 99]);
+});
+
+test('money: a line of chat becomes an entry only when it clearly is one', () => {
+  const read = (text) => { const r = C.parseMoney(text, TODAY); return r && [r.kind, r.amount, r.category, r.note, r.date]; };
+  assert.deepEqual(read('花了15买奶茶'), ['out', 15, '餐饮', '奶茶', null]);
+  assert.deepEqual(read('收到生活费1500'), ['in', 1500, '生活费', '生活费', null]);
+  assert.deepEqual(read('忍住没买奶茶 15块'), ['saved', 15, '餐饮', '奶茶', null]);
+  assert.deepEqual(read('昨天打车花了23.5'), ['out', 23.5, '交通', '打车', '2026-11-13']);
+  assert.deepEqual(read('买书 45元'), ['out', 45, '学习', '书', null]);
+  assert.equal(read('买3本书'), null);          // a task, not three yuan
+  assert.equal(read('复习高数 2小时'), null);
+  assert.equal(read('花了2小时复习'), null);     // time, not money
+  assert.deepEqual(C.localReply('花了15买奶茶\n买菜\n复习 30分钟', TODAY).actions.map((a) => a.type), ['log_money', 'add_task', 'add_task']);
+  const checked = C.validateActions(C.emptyState(), [{ type: 'log_money', kind: 'out', amount: 15, category: '餐饮', note: '奶茶' }, { type: 'log_money', kind: 'out', amount: 'some' }]);
+  assert.deepEqual([checked.actions.length, checked.rejected.length, checked.actions[0].date], [1, 1, null]);
+});

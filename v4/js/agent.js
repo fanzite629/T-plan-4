@@ -37,6 +37,7 @@
     '  {"type":"add_habit","title":"","perWeek":3,"space":""}',
     '  {"type":"add_goal","title":"","deadline":"YYYY-MM-DD 或 null","space":"","milestones":[{"title":"第 1 周：……","due":"YYYY-MM-DD","tasks":[{"title":"","date":"","minutes":60,"steps":[]}]}]}',
     '  {"type":"log_time","title":"做了什么","minutes":40,"date":"YYYY-MM-DD 或 null","taskId":"可选，openTasks 里的任务"}（补记一段已经花掉的时间。只在用户明确说自己已经做了某事并给出时长时使用，例如“刚才复习了高数 40 分钟”；minutes 必须是用户说的数字，不要估计）',
+    '  {"type":"log_money","kind":"in / out / saved","amount":15,"category":"餐饮","note":"奶茶","date":"YYYY-MM-DD 或 null"}（记一笔钱：in 是收入，out 是支出，saved 是想花但忍住没花的钱。只在用户明确说出金额时使用，amount 必须是用户说的数字，不要估计或换算。category 从这些里选：收入用 生活费、兼职、奖学金、红包、退款、其他；支出和 saved 用 餐饮、交通、学习、购物、娱乐、住宿、其他。输入里有 money 时是用户允许你看到的收支概况；没有 money 就不要问余额，也不要给理财或投资建议）',
     '  {"type":"add_date","title":"操作系统期末考试","date":"YYYY-MM-DD","time":"HH:MM 或 null","place":"","space":""}（考试、报名截止、作业截止这类到某一天为止的事，界面会显示倒计时；date 必须是用户给出的确切日期，不知道就先问，不要估计。输入里的 keyDates 是已有的考试、截止日期和目标期限，不要重复添加）',
     '  {"type":"add_cards","space":"","cards":[{"front":"问题","back":"答案"}]}（复习卡片，一次最多 30 张。用户要求出题、做卡片、把笔记或课件变成复习题时使用。每张只考一个知识点，问题要具体，答案简短而完整；内容必须来自用户给的材料或用户说过的话，材料里没有的不要编。输入里的 reviewCards 是已有卡片的数量、今天到期的数量和最近 14 天的回答情况）',
     'options：2 到 4 个用户可以直接点击的简短回答（每个不超过 20 个字）。需要用户做选择或补充信息时，一定给出 options，让用户点击而不是打字。',
