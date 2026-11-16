@@ -18,7 +18,7 @@
     if (key) platform.saveKey(state.settings.agent.provider, key, state.settings.agent.provider);
   } catch { /* keys stay as they were */ }
   const ui = { panelSection: 'model', mode: state.settings.prefs.onboarded ? 'home' : 'planner', // the first-run interview happens in the chat
-     space: null, tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0, search: '', abort: null };
+     space: null, tag: null, tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0, search: '', abort: null };
   const library = new Map(); // files read during this session, by name; kept out of saved state because they are large
   let pip = null; // floating timer window, when open
   let dueNotified = null;
@@ -93,6 +93,10 @@
     stop: 'M7 7h10v10H7z',
     search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm5-2 4 4',
     edit: 'M4 20h4L19 9l-4-4L4 16v4Zm10-14 4 4',
+    chev: 'M7 10l5 5 5-5',
+    sidebar: 'M4 5h16v14H4zM9.500 5v14M15 10l-2 2 2 2',
+    fire: 'M12 21c-3.900 0-6.500-2.600-6.500-6.200 0-3.400 2.600-5.400 3.800-8.800 1.700 1.400 2.300 3.200 2.200 4.800 1.100-.6 1.900-1.900 2-3.400 2.400 1.900 5 4.600 5 7.700 0 3.400-2.700 5.900-6.500 5.900Z',
+    target: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-4a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-4a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z',
   };
   function icon(name) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -250,22 +254,51 @@
     });
   }
 
-  /* ---------- rail: spaces ---------- */
+  /* ---------- rail: views and spaces, grouped and foldable ----------
+     The fixed views form one group and the spaces are grouped by type. A folded group shrinks to its
+     avatars stacked on top of each other; a click opens it again. The whole rail can also be narrowed
+     to icons only. Both choices are kept in the preferences. */
+  const SPACE_GROUPS = [['study', '学习'], ['project', '项目'], ['habit', '习惯'], ['life', '生活']];
+  const spaceType = (sp) => (SPACE_GROUPS.some(([key]) => key === sp.type) ? sp.type : 'study');
+  function setRailPref(mutate) { change((s) => { s.settings.prefs.railFolded = { ...(s.settings.prefs.railFolded || {}) }; mutate(s.settings.prefs); }); }
   function renderRail() {
-    const item = (id, name, color, letter) =>
-      h('button', { class: 'rail-item' + (ui.mode === 'planner' && ui.space === id ? ' active' : ''), onclick: () => { ui.mode = 'planner'; ui.space = id; render(); }, title: name },
-        h('span', { class: 'avatar', style: 'background:' + color }, letter),
-        h('span', { class: 'rail-label' }, name));
+    const prefs = state.settings.prefs;
+    const folded = prefs.railFolded || {};
+    const compact = !!prefs.railCompact;
+    $('#shell').classList.toggle('rail-compact', compact);
+    const go = (mode, spaceId) => () => { ui.mode = mode; if (spaceId !== undefined) ui.space = spaceId; render(); };
+    const views = [
+      { label: '工作台', title: '工作台：今天、本周和各个分区的概况', color: 'var(--ink)', face: '台', ink: true, active: ui.mode === 'home' || (ui.mode === 'planner' && ui.space === null), onclick: go('home') },
+      { label: '课表', title: '课表', color: '#567897', face: '课', active: ui.mode === 'timetable', onclick: go('timetable') },
+      { label: '本周', title: '本周安排：七天的任务、周重点和可投入时间', color: '#8a6f5a', face: '周', active: ui.mode === 'week', onclick: go('week') },
+      { label: '收支', title: '收支：收入、支出、余额走势和存钱罐', color: '#b0564a', face: '收', active: ui.mode === 'money', onclick: go('money') },
+      { label: '回看', title: '回看：每周的时间记录、完成情况和反思', color: '#7a8496', face: icon('bars'), active: ui.mode === 'review', onclick: go('review') },
+    ];
+    const item = (x) => h('button', { class: 'rail-item' + (x.active ? ' active' : ''), title: x.title || x.label, 'aria-label': x.label, 'aria-current': x.active ? 'page' : null, onclick: x.onclick },
+      h('span', { class: 'avatar' + (x.ink ? ' ink' : ''), style: 'background:' + x.color }, x.face), h('span', { class: 'rail-label' }, x.label));
+    const group = (key, name, items) => {
+      const isFolded = !!folded[key];
+      const active = items.some((x) => x.active);
+      const shown = items.slice(0, compact ? 1 : 3);
+      const head = h('button', { class: 'rail-group-head', 'aria-expanded': String(!isFolded), title: (isFolded ? '展开' : '折叠') + '「' + name + '」', onclick: () => setRailPref((p) => { p.railFolded[key] = !isFolded; }) },
+        h('span', { class: 'rail-group-name' }, name), icon('chev'));
+      const body = isFolded
+        ? h('button', { class: 'rail-item rail-stack' + (active ? ' active' : ''), title: name + '：' + items.map((x) => x.label).join('、') + '（点一下展开）', 'aria-label': '展开「' + name + '」，共 ' + items.length + ' 项' + (active ? '，当前页面在里面' : ''),
+          onclick: () => setRailPref((p) => { p.railFolded[key] = false; }) },
+          h('span', { class: 'rail-stack-faces' }, shown.map((x, i) => h('span', { class: 'avatar' + (x.ink ? ' ink' : ''), style: 'background:' + x.color + ';z-index:' + (10 - i) }, x.face)),
+            items.length > shown.length ? h('span', { class: 'avatar more', style: 'z-index:1' }, '+' + (items.length - shown.length)) : null),
+          h('span', { class: 'rail-label' }, name + ' · ' + items.length))
+        : items.map(item);
+      return h('div', { class: 'rail-group' + (isFolded ? ' folded' : ''), role: 'group', 'aria-label': name }, head, body);
+    };
+    const spaceItems = (type) => state.spaces.filter((sp) => spaceType(sp) === type).map((sp) => ({
+      label: sp.name, color: sp.color, face: sp.name.slice(0, 1), active: ui.mode === 'planner' && ui.space === sp.id, onclick: go('planner', sp.id) }));
     $('#rail').replaceChildren(
-      h('button', { class: 'rail-item' + (ui.mode === 'home' || (ui.mode === 'planner' && ui.space === null) ? ' active' : ''), title: '工作台：今天、本周和各个分区的概况', 'aria-label': '工作台', onclick: () => { ui.mode = 'home'; render(); } },
-        h('span', { class: 'avatar', style: 'background:var(--ink)' }, '台'), h('span', { class: 'rail-label' }, '工作台')),
-      h('button', { class: 'rail-item' + (ui.mode === 'timetable' ? ' active' : ''), title: '课表', 'aria-label': '课表', onclick: () => { ui.mode = 'timetable'; render(); } }, h('span', { class: 'avatar', style: 'background:#567897' }, '课'), h('span', { class: 'rail-label' }, '课表')),
-      h('button', { class: 'rail-item' + (ui.mode === 'week' ? ' active' : ''), title: '本周安排：七天的任务、周重点和可投入时间', 'aria-label': '本周安排', onclick: () => { ui.mode = 'week'; render(); } }, h('span', { class: 'avatar', style: 'background:#8a6f5a' }, '周'), h('span', { class: 'rail-label' }, '本周')),
-      h('button', { class: 'rail-item' + (ui.mode === 'money' ? ' active' : ''), title: '收支：收入、支出、余额走势和存钱罐', 'aria-label': '收支', onclick: () => { ui.mode = 'money'; render(); } }, h('span', { class: 'avatar', style: 'background:#b0564a' }, '收'), h('span', { class: 'rail-label' }, '收支')),
-      h('button', { class: 'rail-item' + (ui.mode === 'review' ? ' active' : ''), title: '回看：每周的时间记录、完成情况和反思', 'aria-label': '回看', onclick: () => { ui.mode = 'review'; render(); } }, h('span', { class: 'avatar', style: 'background:#7a8496' }, icon('bars')), h('span', { class: 'rail-label' }, '回看')),
-      h('div', { class: 'rail-rule' }),
-      ...state.spaces.map((s) => item(s.id, s.name, s.color, s.name.slice(0, 1))),
-      h('button', { class: 'rail-item', onclick: () => openSpaceDialog(null) },
+      h('button', { class: 'rail-toggle', 'aria-pressed': String(compact), title: compact ? '展开导航（显示名称）' : '收起导航（只显示头像）', 'aria-label': compact ? '展开导航' : '收起导航',
+        onclick: () => setRailPref((p) => { p.railCompact = !compact; }) }, icon('sidebar')),
+      group('views', '视图', views),
+      ...SPACE_GROUPS.map(([type, name]) => { const items = spaceItems(type); return items.length ? group(type, name, items) : null; }),
+      h('button', { class: 'rail-item', title: '新分区', 'aria-label': '新分区', onclick: () => openSpaceDialog(null) },
         h('span', { class: 'avatar dashed' }, icon('plus')), h('span', { class: 'rail-label' }, '新分区')),
     );
   }
@@ -274,7 +307,7 @@
   function visibleTasks(tab) {
     const t = today();
     const weekEnd = C.addDays(C.weekStart(t), 6);
-    const mine = state.tasks.filter((x) => !ui.space || x.spaceId === ui.space);
+    const mine = state.tasks.filter((x) => (!ui.space || x.spaceId === ui.space) && inTag(x));
     if (tab === 'done') return mine.filter((x) => x.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 60);
     return mine
       .filter((x) => {
@@ -286,6 +319,28 @@
       })
       .sort(byWhen);
   }
+  /* Tags are the user's own labels on tasks. A row of them above the tabs narrows every list to one tag. */
+  const TAG_COLORS = ['#E8825A', '#5B8DEF', '#4FA37A', '#B079D6', '#D9A441', '#4BA3B5', '#D9667A', '#7A8496'];
+  function tagColor(tag) { let n = 0; for (const ch of tag) n = (n * 31 + ch.codePointAt(0)) >>> 0; return TAG_COLORS[n % TAG_COLORS.length]; }
+  const inTag = (x) => !ui.tag || (x.tags || []).includes(ui.tag);
+  /* Every tag in use, most used first, counted over unfinished tasks in the current space. */
+  function tagsInUse(scope) {
+    const counts = new Map();
+    for (const t of state.tasks) if (scope(t)) for (const tag of t.tags || []) counts.set(tag, (counts.get(tag) || 0) + (t.done ? 0 : 1));
+    return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'));
+  }
+  function tagChips(scope) {
+    const tags = tagsInUse(scope);
+    if (ui.tag && !tags.some(([tag]) => tag === ui.tag)) ui.tag = null;
+    if (!tags.length) return null;
+    const chip = (tag, label, color, n) => {
+      const on = (ui.tag || null) === tag;
+      return h('button', { class: 'cat-chip' + (on ? ' on' : ''), 'aria-pressed': String(on), title: tag ? '只看带「#' + tag + '」的任务' : '不按标签筛选',
+        onclick: () => { ui.tag = on ? null : tag; render(); } }, h('i', { style: 'background:' + color }), label, n ? h('small', {}, String(n)) : null);
+    };
+    return h('div', { class: 'cat-chips', role: 'toolbar', 'aria-label': '按标签筛选' }, chip(null, '全部', 'var(--ink)'), tags.map(([tag, n]) => chip(tag, '#' + tag, tagColor(tag), n)));
+  }
+  const tagList = (tags) => (tags || []).map((tag) => h('span', { class: 'utag', style: '--tag:' + tagColor(tag) }, '#' + tag));
   const byWhen = (a, b) => a.done - b.done || (a.date || '9999').localeCompare(b.date || '9999') || (a.time || '99:99').localeCompare(b.time || '99:99') || a.createdAt - b.createdAt;
   const whenLabel = (t) => (!t.date && t.week ? (t.week === C.weekStart(today()) ? '本周未定' : plainDate(t.week) + ' 那一周未定') : dateLabel(t.date) + (t.time ? ' ' + t.time : ''));
   /* After a task is finished with its timer, one click of feedback goes into the profile. */
@@ -350,9 +405,11 @@
         t.next && !t.done ? h('span', { class: 'task-next' }, '继续：' + t.next) : null,
         h('span', { class: 'task-meta' },
           sp ? h('span', { class: 'dot', style: 'background:' + sp.color }) : null,
+          sp && !ui.space ? h('span', { class: 'task-space' }, sp.name + ' ·') : null,
           h('span', { class: overdue ? 'overdue' : '' }, overdue ? '已过期 · ' + whenLabel(t) : whenLabel(t)),
           h('span', {}, '· ' + minutesLabel(t.minutes)),
-          t.steps ? h('span', {}, '· ' + stepsDone + '/' + t.steps.length + ' 段') : null)),
+          t.steps ? h('span', {}, '· ' + stepsDone + '/' + t.steps.length + ' 段') : null),
+        t.tags ? h('span', { class: 'task-tags' }, tagList(t.tags)) : null),
       !t.done && !state.timer ? h('button', { class: 'play', 'aria-label': '开始计时：' + t.title, title: '开始计时', onclick: () => beginTimer(t.id) }, icon('play')) : null);
     fill(row, t.id, t.done ? 1 : t.steps ? stepsDone / t.steps.length : 0, sp && sp.color);
     if (!t.steps || t.steps.length < 2) return row;
@@ -565,7 +622,8 @@
     let body;
     const query = ui.search.trim().toLowerCase();
     if (query) {
-      const found = state.tasks.filter((x) => inSpace(x) && x.title.toLowerCase().includes(query)).sort(byWhen).slice(0, 80);
+      const tagQuery = query.replace(/^[#＃]/, '');
+      const found = state.tasks.filter((x) => inSpace(x) && inTag(x) && (x.title.toLowerCase().includes(query) || (x.tags || []).some((tag) => tag.toLowerCase().includes(tagQuery)))).sort(byWhen).slice(0, 80);
       body = [h('h3', { class: 'group-title' }, '搜索到 ' + found.length + ' 项' + (current ? '（只在这个分区里）' : '')), found.length ? found.map(taskRow) : h('p', { class: 'empty' }, '没有标题里包含「' + ui.search.trim() + '」的任务。')];
     } else if (tab === 'goals') {
       body = goals.length ? goals.map((g) => goalCard(g, type === 'project'))
@@ -593,9 +651,9 @@
         tab === 'today' && type !== 'habit' && habits.length ? [h('h3', { class: 'group-title' }, '习惯'), ...habits.map(habitRow)] : null];
     }
     const foot = tab === 'cards' && !query ? [button('outline', '新卡片', () => openCardDialog(null))] : type === 'habit' ? [button('outline', '新习惯', () => openHabitDialog(null)), button('ghost', '新记录项', openMetricDialog)]
-      : type === 'life' ? [button('outline', '新建任务', () => openTaskDialog(null))]
-        : type === 'project' ? [button('outline', '新建任务', () => openTaskDialog(null))]
-          : [button('outline', '新建任务', () => openTaskDialog(null)), button('ghost', '新习惯', () => openHabitDialog(null))];
+      : type === 'life' ? [button('outline', '新建任务', () => openComposer('task'))]
+        : type === 'project' ? [button('outline', '新建任务', () => openComposer('task'))]
+          : [button('outline', '新建任务', () => openComposer('task')), button('ghost', '新习惯', () => openHabitDialog(null))];
     $('#list').style.setProperty('--dim', summaryOpen ? '1' : '0');
     $('#list').replaceChildren(
       h('header', { class: 'list-head' },
@@ -603,10 +661,11 @@
         current ? null : h('button', { class: 'text-btn', title: '回到工作台', onclick: () => { ui.mode = 'home'; render(); } }, '‹ 工作台'),
         current ? h('button', { class: 'icon-btn', 'aria-label': '编辑分区', title: '编辑分区', onclick: () => openSpaceDialog(current) }, icon('gear')) : null),
       summary(todayNumbers(inSpace)),
-      h('label', { class: 'list-search' }, icon('search'), h('input', { type: 'search', value: ui.search, placeholder: '搜索任务（包括已完成的）', 'aria-label': '搜索任务', maxLength: 60,
+      h('label', { class: 'list-search' }, icon('search'), h('input', { type: 'search', value: ui.search, placeholder: '搜索任务或 #标签（包括已完成的）', 'aria-label': '搜索任务', maxLength: 60,
         // The list is rebuilt on every keystroke, so focus is put back; an input method's unfinished text is left alone.
         oninput: (e) => { if (e.isComposing) return; searchFor(e.target.value); }, oncompositionend: (e) => searchFor(e.target.value) })),
       query ? '' : upNext(current),
+      tagChips(inSpace),
       query ? '' : h('div', { class: 'segmented', role: 'tablist' }, tabs.map(([key, label]) =>
         h('button', { role: 'tab', 'aria-selected': String(tab === key), class: tab === key ? 'on' : '', onclick: () => { ui.tabs[type] = key; render(); } }, label))),
       h('div', { class: 'list-scroll' }, body),
@@ -1278,6 +1337,19 @@
     for (const child of children.flat(Infinity)) if (child != null && child !== false) el.append(child);
     return el;
   }
+  /* Runs of days with recorded time: the longest one, and the one that reaches today (or yesterday,
+     since today may simply not be over yet). */
+  function streaks(days, t) {
+    let longest = 0, run = 0;
+    for (const d of days) { if (d.minutes === null) break; run = d.minutes > 0 ? run + 1 : 0; longest = Math.max(longest, run); }
+    const past = days.filter((d) => d.minutes !== null);
+    let i = past.length - 1;
+    if (i >= 0 && past[i].date === t && !past[i].minutes) i--;
+    let current = 0;
+    for (; i >= 0 && past[i].minutes > 0; i--) current++;
+    return { longest, current };
+  }
+  const shortTime = (m) => (m >= 60 ? (m % 60 ? Math.floor(m / 60) + 'h' + (m % 60) + 'm' : m / 60 + 'h') : m + 'm');
   function trajectoryCard(goToWeek) {
     const t = today();
     const data = C.trajectory(state, t);
@@ -1298,43 +1370,75 @@
       return el;
     };
     const weekdayOf = (date) => '周' + '日一二三四五六'[new Date(date + 'T12:00:00').getDay()];
+    const block = (title, extra, ...body) => h('div', { class: 'viz-block' }, h('header', { class: 'viz-block-head' }, h('h4', {}, title), extra || null), body);
 
-    // --- calendar: one cell per day, darker for more recorded time
+    // --- the numbers behind the calendar, all read from recorded time
+    const past = data.heat.filter((d) => d.minutes !== null);
+    const total = past.reduce((n, d) => n + d.minutes, 0);
+    const best = past.reduce((b, d) => (d.minutes > b.minutes ? d : b), { minutes: 0 });
+    const runs = streaks(data.heat, t);
+    const figure = (value, label, note, cls) => h('div', { class: 'viz-fig' + (cls ? ' ' + cls : '') }, h('strong', {}, value), h('span', {}, label), note ? h('small', {}, note) : null);
+    const figures = h('div', { class: 'viz-figs' },
+      figure(total ? minutesLabel(total) : '0', '20 周累计记录', data.recordedDays ? '有记录的日子平均 ' + minutesLabel(Math.round(total / data.recordedDays)) : null, 'lead'),
+      figure(String(data.recordedDays), '有记录的天数', '共 ' + past.length + ' 天'),
+      figure(runs.current + ' 天', '当前连续', runs.current ? '到' + (past.length && past[past.length - 1].minutes ? '今天' : '昨天') : '今天记一段就开始', runs.current ? 'hot' : ''),
+      figure(runs.longest + ' 天', '最长连续'),
+      figure(best.minutes ? minutesLabel(best.minutes) : '—', '记录最多的一天', best.minutes ? plainDate(best.date) + ' ' + weekdayOf(best.date) : null));
+
+    // --- calendar: one cell per day, darker for more recorded time; it stretches to the width it is given
     const level = (m) => (m === null ? 'future' : m === 0 ? 0 : m <= 15 ? 1 : m <= 30 ? 2 : m <= 60 ? 3 : m <= 120 ? 4 : 5);
     const columns = Array.from({ length: 20 }, (_, w) => data.heat.slice(w * 7, w * 7 + 7));
     const heat = h('div', { class: 'viz-heat', role: 'group', 'aria-label': '最近 20 周每天已记录的时间' },
-      h('div', { class: 'viz-heat-rows', 'aria-hidden': 'true' }, ['', '一', '', '三', '', '五', '', '日'].map((x) => h('span', {}, x))),
-      columns.map((week, w) => h('div', { class: 'viz-heat-col' },
-        h('span', { class: 'viz-heat-month', 'aria-hidden': 'true' }, (w === 0 ? columns[1][0].date.slice(5, 7) === week[0].date.slice(5, 7) : week[0].date.slice(5, 7) !== columns[w - 1][0].date.slice(5, 7)) ? Number(week[0].date.slice(5, 7)) + '月' : ''),
-        week.map((d) => (d.minutes === null ? h('span', { class: 'viz-cell future', 'aria-hidden': 'true' })
-          : hint(h('button', { type: 'button', class: 'viz-cell l' + level(d.minutes) + (d.date === t ? ' today' : ''), 'aria-label': plainDate(d.date) + ' ' + weekdayOf(d.date) + '，' + (d.minutes ? '已记录 ' + minutesLabel(d.minutes) : '没有记录'), onclick: () => goToWeek(d.date) }),
-            [plainDate(d.date) + ' ' + weekdayOf(d.date) + (d.date === t ? '（今天）' : ''), d.minutes ? '已记录 ' + minutesLabel(d.minutes) : '没有记录', '点一下看这一周']))))));
+      h('span', { class: 'viz-heat-corner', 'aria-hidden': 'true' }),
+      columns.map((week, w) => h('span', { class: 'viz-heat-month', 'aria-hidden': 'true', style: 'grid-column:' + (w + 2) },
+        (w === 0 ? columns[1][0].date.slice(5, 7) === week[0].date.slice(5, 7) : week[0].date.slice(5, 7) !== columns[w - 1][0].date.slice(5, 7)) ? Number(week[0].date.slice(5, 7)) + '月' : '')),
+      ['一', '', '三', '', '五', '', '日'].map((x, r) => h('span', { class: 'viz-heat-day', 'aria-hidden': 'true', style: 'grid-row:' + (r + 2) }, x)),
+      columns.map((week, w) => week.map((d, r) => {
+        const place = 'grid-column:' + (w + 2) + ';grid-row:' + (r + 2);
+        return d.minutes === null ? h('span', { class: 'viz-cell future', style: place, 'aria-hidden': 'true' })
+          : hint(h('button', { type: 'button', class: 'viz-cell l' + level(d.minutes) + (d.date === t ? ' today' : ''), style: place, 'aria-label': plainDate(d.date) + ' ' + weekdayOf(d.date) + '，' + (d.minutes ? '已记录 ' + minutesLabel(d.minutes) : '没有记录'), onclick: () => goToWeek(d.date) }),
+            [plainDate(d.date) + ' ' + weekdayOf(d.date) + (d.date === t ? '（今天）' : ''), d.minutes ? '已记录 ' + minutesLabel(d.minutes) : '没有记录', '点一下看这一周']);
+      })));
     const heatLegend = h('div', { class: 'viz-scale' }, h('span', {}, '少'), [['l0', '没有记录'], ['l1', '15 分钟以内'], ['l2', '16–30 分钟'], ['l3', '31–60 分钟'], ['l4', '1–2 小时'], ['l5', '2 小时以上']].map(([cls, label]) => hint(h('i', { class: 'viz-cell ' + cls, tabIndex: 0, 'aria-label': label }), [label])), h('span', {}, '多'));
 
-    // --- weekly totals: twelve columns on one scale
-    const top = Math.max(60, ...data.weeks.map((w) => w.minutes));
-    const peak = data.weeks.reduce((best, w) => (w.minutes > best.minutes ? w : best), data.weeks[0]);
-    const weekly = h('div', { class: 'viz-weeks', role: 'group', 'aria-label': '最近 12 周每周已记录的时间' }, data.weeks.map((w, i) => {
-      const current = i === data.weeks.length - 1;
-      return hint(h('button', { type: 'button', class: 'viz-week' + (current ? ' current' : ''), 'aria-label': plainDate(w.monday) + ' 那一周，已记录 ' + minutesLabel(w.minutes) + '，' + w.activeDays + ' 天有记录', onclick: () => goToWeek(w.monday) },
-        h('span', { class: 'viz-week-value' }, (current || (w === peak && w.minutes)) && w.minutes ? (w.minutes >= 60 ? (Math.round(w.minutes / 6) / 10) + 'h' : w.minutes + 'm') : ''),
-        h('span', { class: 'viz-week-track' }, h('i', { style: 'height:' + ((w.minutes / top) * 100).toFixed(1) + '%' })),
-        h('span', { class: 'viz-week-label' }, current ? '本周' : i % 2 === 1 ? Number(w.monday.slice(5, 7)) + '/' + Number(w.monday.slice(8)) : '')),
-      [plainDate(w.monday) + ' – ' + plainDate(C.addDays(w.monday, 6)) + (current ? '（本周）' : ''), '已记录 ' + minutesLabel(w.minutes), w.activeDays + ' 天有记录', '点一下看这一周']);
-    }));
+    // --- weekly totals: twelve columns on one scale, with gridlines and the twelve-week average
+    const rawTop = Math.max(60, ...data.weeks.map((w) => w.minutes));
+    const tick = [15, 30, 60, 120, 180, 240, 300, 600, 900, 1200, 1800, 3000].find((s) => rawTop / s <= 4) || 6000;
+    const top = Math.ceil(rawTop / tick) * tick;
+    const ticks = Array.from({ length: top / tick + 1 }, (_, i) => i * tick).reverse();
+    const peak = data.weeks.reduce((b, w) => (w.minutes > b.minutes ? w : b), data.weeks[0]);
+    const average = Math.round(data.weeks.reduce((n, w) => n + w.minutes, 0) / data.weeks.length);
+    const pct = (m) => ((m / top) * 100).toFixed(1) + '%';
+    const weekly = h('div', { class: 'viz-bars' },
+      h('div', { class: 'viz-bars-axis', 'aria-hidden': 'true' }, ticks.map((v) => h('span', { style: 'bottom:' + pct(v) }, v ? shortTime(v) : '0'))),
+      h('div', { class: 'viz-bars-plot', role: 'group', 'aria-label': '最近 12 周每周已记录的时间' },
+        ticks.map((v) => h('i', { class: 'viz-gridline' + (v ? '' : ' base'), style: 'bottom:' + pct(v), 'aria-hidden': 'true' })),
+        average ? h('div', { class: 'viz-avg', style: 'bottom:' + pct(average), 'aria-hidden': 'true' }, h('span', {}, '平均 ' + shortTime(average))) : null,
+        data.weeks.map((w, i) => {
+          const current = i === data.weeks.length - 1;
+          const label = current || (w === peak && w.minutes) ? shortTime(w.minutes) : '';
+          return hint(h('button', { type: 'button', class: 'viz-week' + (current ? ' current' : '') + (w.minutes ? '' : ' empty'), 'aria-label': plainDate(w.monday) + ' 那一周，已记录 ' + minutesLabel(w.minutes) + '，' + w.activeDays + ' 天有记录', onclick: () => goToWeek(w.monday) },
+            h('i', { style: 'height:' + (w.minutes ? pct(w.minutes) : '3px') }, label && w.minutes ? h('span', { class: 'viz-week-value' }, label) : null)),
+          [plainDate(w.monday) + ' – ' + plainDate(C.addDays(w.monday, 6)) + (current ? '（本周）' : ''), '已记录 ' + minutesLabel(w.minutes), w.activeDays + ' 天有记录', '点一下看这一周']);
+        })),
+      h('span', { class: 'viz-bars-corner' }),
+      h('div', { class: 'viz-bars-labels', 'aria-hidden': 'true' }, data.weeks.map((w, i) => h('span', { class: i === data.weeks.length - 1 ? 'current' : '' }, i === data.weeks.length - 1 ? '本周' : i % 2 === 1 ? Number(w.monday.slice(5, 7)) + '/' + Number(w.monday.slice(8)) : ''))));
+    const thisWeek = data.weeks[data.weeks.length - 1].minutes, lastWeek = data.weeks[data.weeks.length - 2].minutes;
+    const trend = !thisWeek && !lastWeek ? null : !lastWeek ? '上周没有记录' : (thisWeek >= lastWeek ? '比上周多 ' : '比上周少 ') + minutesLabel(Math.abs(thisWeek - lastWeek));
 
-    // --- balance: the same unit on every axis, the last four weeks over the four before
+    // --- balance: the same unit on every axis, the last four weeks over the four before, then the same as ranked bars
     let balance;
     if (!data.balance) balance = h('p', { class: 'empty' }, '至少有三个分区时，这里会画出时间在各分区之间的分布。');
     else {
-      const axes = data.balance.axes, n = axes.length, size = 300, cx = size / 2, cy = size / 2 + 4, R = 92;
+      const axes = data.balance.axes, n = axes.length, size = 300, cx = size / 2, cy = size / 2 + 4, R = 96;
       const rawMax = Math.max(30, ...axes.map((a) => Math.max(a.recent, a.previous)));
       const step = rawMax <= 60 ? 15 : rawMax <= 240 ? 60 : rawMax <= 600 ? 120 : 300;
       const max = Math.ceil(rawMax / step) * step;
       const at = (i, value) => { const angle = -Math.PI / 2 + (i / n) * Math.PI * 2, r = (value / max) * R; return [cx + Math.cos(angle) * r, cy + Math.sin(angle) * r]; };
       const points = (key) => axes.map((a, i) => at(i, a[key]).map((v) => v.toFixed(1)).join(',')).join(' ');
-      const svg = sv('svg', { viewBox: '0 0 ' + size + ' ' + size, class: 'viz-radar', role: 'img', 'aria-label': '各分区已记录时间：最近 4 周与之前 4 周的对比。下面有同样内容的表格。' },
-        [0.25, 0.5, 0.75, 1].map((f) => sv('polygon', { class: 'viz-ring', points: axes.map((_, i) => at(i, max * f).map((v) => v.toFixed(1)).join(',')).join(' ') })),
+      const color = (a) => (space(a.id) || {}).color || 'var(--t3)';
+      const svg = sv('svg', { viewBox: '0 0 ' + size + ' ' + size, class: 'viz-radar', role: 'img', 'aria-label': '各分区已记录时间：最近 4 周与之前 4 周的对比。旁边的条形列出了同样的数字。' },
+        [0.25, 0.5, 0.75, 1].map((f, k) => sv('polygon', { class: 'viz-ring' + (k === 3 ? ' outer' : ''), points: axes.map((_, i) => at(i, max * f).map((v) => v.toFixed(1)).join(',')).join(' ') })),
         axes.map((_, i) => { const [x, y] = at(i, max); return sv('line', { class: 'viz-ring', x1: cx, y1: cy, x2: x.toFixed(1), y2: y.toFixed(1) }); }),
         sv('polygon', { class: 'viz-shape previous', points: points('previous') }),
         sv('polygon', { class: 'viz-shape recent', points: points('recent') }),
@@ -1346,24 +1450,34 @@
           label.textContent = a.name.length > 7 ? a.name.slice(0, 6) + '…' : a.name;
           return label;
         }),
-        // Hit areas larger than the dots, one per axis, carrying both values.
         axes.map((a, i) => { const [x, y] = at(i, Math.max(a.recent, a.previous, max * 0.12)); return hint(sv('circle', { class: 'viz-hit', cx: x.toFixed(1), cy: y.toFixed(1), r: 16, tabindex: 0, role: 'img', 'aria-label': a.name + '：最近 4 周 ' + minutesLabel(a.recent) + '，之前 4 周 ' + minutesLabel(a.previous) }),
           [a.name, '最近 4 周 ' + minutesLabel(a.recent), '之前 4 周 ' + minutesLabel(a.previous)]); }));
+      const barMax = Math.max(1, ...axes.map((a) => Math.max(a.recent, a.previous)));
+      const ranked = [...axes].sort((a, b) => b.recent - a.recent || b.previous - a.previous);
       balance = [
         h('div', { class: 'viz-legend' }, h('span', {}, h('i', { class: 'viz-key recent' }), '最近 4 周 · ' + minutesLabel(data.balance.recentTotal)), h('span', {}, h('i', { class: 'viz-key previous' }), '之前 4 周 · ' + minutesLabel(data.balance.previousTotal))),
-        svg,
-        h('p', { class: 'sub' }, '每条轴是一个分区，单位都是已记录的时间；最外圈是 ' + minutesLabel(max) + '。'),
-        h('details', { class: 'viz-table' }, h('summary', {}, '用表格看'),
-          h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, '分区'), h('th', {}, '最近 4 周'), h('th', {}, '之前 4 周'))),
-            h('tbody', {}, axes.map((a) => h('tr', {}, h('td', {}, a.name), h('td', {}, minutesLabel(a.recent)), h('td', {}, minutesLabel(a.previous))))))),
+        h('div', { class: 'viz-balance' }, svg,
+          h('ul', { class: 'viz-rank', 'aria-label': '各分区已记录时间' }, ranked.map((a) => {
+            const share = data.balance.recentTotal ? Math.round((a.recent / data.balance.recentTotal) * 100) : 0;
+            return h('li', {},
+              h('span', { class: 'viz-rank-name' }, h('i', { style: 'background:' + color(a) }), a.name),
+              h('span', { class: 'viz-rank-value' }, minutesLabel(a.recent), data.balance.recentTotal ? h('small', {}, share + '%') : null),
+              h('span', { class: 'viz-rank-track' }, h('i', { class: 'recent', style: 'width:' + ((a.recent / barMax) * 100).toFixed(1) + '%' }), h('i', { class: 'previous', style: 'width:' + ((a.previous / barMax) * 100).toFixed(1) + '%' })),
+              h('small', { class: 'viz-rank-prev' }, '之前 4 周 ' + minutesLabel(a.previous)));
+          }))),
+        h('p', { class: 'viz-note' }, '雷达图每条轴是一个分区，单位都是已记录的时间；最外圈是 ' + minutesLabel(max) + '。'),
       ];
     }
     root.append(
-      h('div', { class: 'card-head' }, h('h3', {}, '成长轨迹'), h('span', { class: 'sub' }, '最近 20 周里有 ' + data.recordedDays + ' 天留下了记录')),
+      h('div', { class: 'card-head' }, h('div', { class: 'viz-title' }, h('h3', {}, '成长轨迹'), h('span', { class: 'sub' }, '最近 20 周里有 ' + data.recordedDays + ' 天留下了记录')),
+        h('span', { class: 'viz-badge' }, '只统计计时和补记 · 时长不代表学习效果')),
+      h('div', { class: 'viz-top' },
+        block('每天已记录的时间 · 最近 20 周', heatLegend, heat),
+        figures),
       h('div', { class: 'viz-grid' },
-        h('div', { class: 'viz-block' }, h('h4', {}, '每天已记录的时间 · 最近 20 周'), heat, heatLegend),
-        h('div', { class: 'viz-block' }, h('h4', {}, '每周已记录的时间 · 最近 12 周'), weekly, h('p', { class: 'sub' }, '最高的一周是 ' + minutesLabel(peak.minutes) + '。只统计计时和补记，时间长短不代表学习效果。')),
-        h('div', { class: 'viz-block' }, h('h4', {}, '时间花在哪些分区'), balance)),
+        block('每周已记录的时间 · 最近 12 周', trend ? h('span', { class: 'viz-trend' + (thisWeek >= lastWeek ? ' up' : ' down') }, trend) : null, weekly,
+          h('p', { class: 'viz-note' }, (peak.minutes ? '最高的一周是 ' + plainDate(peak.monday) + ' 那周，' + minutesLabel(peak.minutes) + '。' : '这 12 周还没有记录。') + (average ? '虚线是 12 周平均。' : ''))),
+        block('时间花在哪些分区', null, balance)),
       tip);
     return root;
   }
@@ -1703,8 +1817,18 @@
 
   /* `draft` carries what was typed so far when the dialog is rebuilt after a step edit. */
   function openTaskDialog(task, draft) {
-    const v = draft || { title: task ? task.title : '', date: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today(), next: task ? task.next || '' : '', time: task ? task.time || '' : '', minutes: task ? task.minutes : 30, space: task ? task.spaceId || '' : ui.space || '' };
-    const typed = () => ({ next: form.next.value, title: form.title.value, date: form.date.value, time: form.time.value, minutes: form.minutes.value, space: form.space.value });
+    const v = draft || { title: task ? task.title : '', date: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today(), next: task ? task.next || '' : '', time: task ? task.time || '' : '', minutes: task ? task.minutes : 30, space: task ? task.spaceId || '' : ui.space || '', tags: task ? task.tags || [] : ui.tag ? [ui.tag] : [] };
+    const typed = () => ({ next: form.next.value, title: form.title.value, date: form.date.value, time: form.time.value, minutes: form.minutes.value, space: form.space.value, tags: C.cleanTags(form.tags.value) });
+    // Tags already used elsewhere, offered with one click so the same word is not spelled two ways.
+    const known = tagsInUse(() => true).map(([tag]) => tag);
+    const tagBox = h('input', { name: 'tags', maxLength: 90, value: (v.tags || []).join(' '), placeholder: '例如 考试 作业（用空格分开）', oninput: () => drawSuggest() });
+    const suggest = h('div', { class: 'tag-suggest' });
+    const drawSuggest = () => {
+      const have = C.cleanTags(tagBox.value);
+      const rest = known.filter((tag) => !have.includes(tag)).slice(0, 12);
+      suggest.replaceChildren(...rest.map((tag) => h('button', { type: 'button', class: 'utag', style: '--tag:' + tagColor(tag), title: '加上这个标签', onclick: () => { tagBox.value = [...C.cleanTags(tagBox.value), tag].join(' '); drawSuggest(); } }, '+ #' + tag)));
+    };
+    drawSuggest();
     const editStep = (op) => {
       try {
         if (!commit(C.editTaskSteps(state, task.id, op))) return;
@@ -1741,6 +1865,7 @@
       whenHelp(() => form, { kind: 'plan', time: true, minutes: true, optional: true }),
       h('p', { class: 'sub' }, '填了开始时间的任务会和课程一起显示在课表的周视图里，并在开始前提醒。'),
       field('分区', h('select', { name: 'space' }, h('option', { value: '' }, '不分区'), state.spaces.map((x) => h('option', { value: x.id, selected: x.id === v.space }, x.name)))),
+      h('label', { class: 'field' }, h('span', {}, '标签（可以不填，最多 6 个）'), tagBox, suggest),
       field('下次从哪里继续（可以留空，开始计时时会显示）', h('input', { name: 'next', maxLength: 300, value: v.next || '' })),
       stepEditor,
       task ? h('div', { class: 'row' }, h('button', { type: 'button', class: 'pill soft', onclick: () => openSessionDialog(null, { taskId: task.id }) }, icon('plus'), '补记这个任务花的时间'),
@@ -1763,6 +1888,8 @@
           if (target.steps) target.minutes = target.steps.reduce((n, x) => n + x.minutes, 0);
           if (time) target.time = time; else delete target.time;
           if (date) delete target.week;
+          const tags = C.cleanTags(form.tags.value);
+          if (tags.length) target.tags = tags; else delete target.tags;
           const next = form.next.value.replace(/\s+/g, ' ').trim();
           if (next) target.next = next; else delete target.next;
           if (!task) s.tasks.push(target);
@@ -2072,7 +2199,7 @@
   }
 
   /* ---------- shell ---------- */
-  const timetable = window.TPlanTimetableUI({ getState: () => state, commit, toast, h, openWorkspace: () => { ui.mode = 'timetable'; render(); }, undoable, openTask: (id) => { const task = state.tasks.find((x) => x.id === id); if (task) openTaskDialog(task); },
+  const timetable = window.TPlanTimetableUI({ getState: () => state, commit, toast, h, compose: (text) => openComposer('course', text), openWorkspace: () => { ui.mode = 'timetable'; render(); }, undoable, openTask: (id) => { const task = state.tasks.find((x) => x.id === id); if (task) openTaskDialog(task); },
     courses: {
       spaceFor: spaceForCourse,
       /* One study space per course, tied to it by title. A space that already carries the course's name is tied rather than duplicated. */
@@ -2090,6 +2217,170 @@
       addDate: (title) => { const sp = spaceForCourse(title); openDateDialog(null, { title: title + ' 考试', spaceId: sp ? sp.id : null }); },
       openSpace: (id) => { ui.mode = 'planner'; ui.space = id; render(); },
     } });
+  /* ---------- quick add: one chat-style box for both courses and tasks ----------
+     A line is typed from a template, read on the spot, and shown back as a card before anything
+     is saved. Several lines at once become several cards. Nothing is written until "添加". */
+  const COMPOSER = {
+    course: {
+      title: '添加课程', placeholder: '例如：自动控制原理 周四 1-2节 1-16周 @二东402 王老师',
+      intro: '一行一门课，按下面的顺序写就行，顺序也可以打乱：\n课程名 · 星期 · 节次或钟点 · 周次 · @教室 · 某某老师\n周次不写就按整个学期；只上一次的课写具体日期。一次可以粘贴多行。',
+      templates: [
+        ['按节次', '自动控制原理 周四 1-2节 1-16周 @二东402 王老师'],
+        ['按钟点', '传感器原理 周二 10:00-11:35 1-16周 @二中520'],
+        ['单双周', '电路实验 周五 7-8节 2-16双周 @实验楼'],
+        ['只上一次', '期中补课 ' + C.addDays(C.todayISO(), 4) + ' 14:00-15:35 @二东602'],
+      ],
+    },
+    task: {
+      title: '安排任务', placeholder: '例如：明天下午3点 复习单片机 40分钟 @学习 #考试',
+      intro: '一行一件事，像发消息一样写：\n什么时候 · 做什么 · 多久 · @分区 · #标签\n时间和时长可以不写；标签可以写好几个，之后在任务列表里按标签筛选。',
+      templates: [
+        ['定时间', '明天下午3点 复习单片机 40分钟 #考试'],
+        ['今天做', '今天 整理实验报告 30分钟 #作业'],
+        ['下周', '下周一 9:00 小组讨论 1小时 #项目'],
+        ['不定日期', '买洗衣液 #生活'],
+      ],
+    },
+  };
+  const composer = { mode: 'task', logs: { course: [], task: [] }, el: null };
+  function openComposer(mode, prefill = '') {
+    if (mode) composer.mode = mode;
+    if (!composer.el) {
+      composer.el = h('dialog', { class: 'composer', 'aria-label': '快速添加' });
+      composer.el.addEventListener('click', (e) => { if (e.target === composer.el) composer.el.close(); });
+      document.body.append(composer.el);
+    }
+    drawComposer(prefill);
+    if (!composer.el.open) composer.el.showModal();
+    const box = composer.el.querySelector('.composer-input');
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  }
+  const fieldPill = (label, value, cls) => h('span', { class: 'cp-pill' + (cls ? ' ' + cls : '') }, h('small', {}, label), value);
+  /* Reads the lines of one message into cards. Courses are checked against the timetable as it is now. */
+  function readComposer(mode, text) {
+    const lines = text.split(/\n+/).map((x) => x.trim()).filter(Boolean).slice(0, 30);
+    if (mode === 'task') return lines.map((line) => ({ line, ...C.parseTaskLine(state, line, today(), ui.space) }));
+    const sched = T.normalize(state.schedule);
+    const rows = lines.map((line) => T.fromLine(line, sched.settings));
+    const p = T.preview(sched, rows);
+    return rows.map((row, i) => {
+      const r = p.records[i];
+      const mine = T.expand(row, sched.settings);
+      const clashes = r.errors.length ? [] : p.conflicts.filter((c) => mine.some((e) => T.key(e) === T.key(c.a)));
+      return { line: lines[i], row, errors: r.errors, value: r.value, count: r.occurrences, clashes };
+    });
+  }
+  function courseCardView(item) {
+    const v = item.value, row = item.row;
+    const when = v.date ? plainDate(v.date) : v.weekday ? T.weekdayNames[v.weekday - 1] : null;
+    return [
+      h('strong', { class: 'cp-title' }, v.title || '（没有课程名）'),
+      h('div', { class: 'cp-pills' },
+        when ? fieldPill(v.date ? '日期' : '星期', when) : null,
+        v.startTime ? fieldPill('时间', v.startTime + '–' + v.endTime + (row.periods ? '（第 ' + row.periods + ' 节）' : '')) : row.periods ? fieldPill('节次', '第 ' + row.periods + ' 节') : null,
+        !v.date && row.weeks ? fieldPill('周次', row.weeks + ' 周' + (row.weeksDefaulted ? '（没写，按整个学期）' : ''), row.weeksDefaulted ? 'guess' : '') : null,
+        v.room ? fieldPill('教室', v.room) : null, v.teacher ? fieldPill('教师', v.teacher) : null),
+      item.errors.length ? h('p', { class: 'cp-error' }, item.errors.join('；'))
+        : h('p', { class: 'cp-ok' }, '会排进 ' + item.count + ' 次课' + (item.clashes.length ? ' · 与已有安排有 ' + item.clashes.length + ' 处时间重叠' : '')),
+    ];
+  }
+  function taskCardView(item) {
+    if (item.error) return [h('strong', { class: 'cp-title' }, item.line), h('p', { class: 'cp-error' }, item.error)];
+    const t = item.task, sp = space(t.spaceId);
+    return [
+      h('strong', { class: 'cp-title' }, t.title),
+      h('div', { class: 'cp-pills' },
+        fieldPill('日期', t.date ? dateLabel(t.date) : '未定日期', t.date ? '' : 'guess'),
+        t.time ? fieldPill('开始', t.time) : null,
+        fieldPill('时长', minutesLabel(t.minutes) + (item.minutesGiven ? '' : '（默认）'), item.minutesGiven ? '' : 'guess'),
+        sp ? fieldPill('分区', sp.name) : null,
+        ...t.tags.map((tag) => h('span', { class: 'utag', style: '--tag:' + tagColor(tag) }, '#' + tag))),
+      item.unknownSpace ? h('p', { class: 'cp-error' }, '没有叫「' + item.unknownSpace + '」的分区，先放在' + (sp ? '「' + sp.name + '」' : '不分区') + '。') : null,
+    ];
+  }
+  function addFromComposer(msg) {
+    const mode = msg.mode;
+    if (mode === 'task') {
+      const tasks = msg.items.filter((x) => x.task).map((x) => x.task);
+      if (!tasks.length) return toast('没有能添加的任务');
+      const ok = undoable('已添加 ' + tasks.length + ' 件事', () => change((s) => {
+        for (const t of tasks) s.tasks.push({ id: C.uid('t'), title: t.title, date: t.date, minutes: t.minutes, spaceId: t.spaceId, done: false, doneAt: null, createdAt: Date.now(), origin: 'user', ...(t.time ? { time: t.time } : {}), ...(t.tags.length ? { tags: t.tags } : {}) });
+      }));
+      if (ok) { msg.done = tasks.length + ' 件事已加入任务列表'; drawComposer(); }
+      return;
+    }
+    const items = readComposer('course', msg.items.map((x) => x.line).join('\n')); // the timetable may have changed since the card was shown
+    const rows = items.filter((x) => !x.errors.length).map((x) => x.row);
+    if (!rows.length) return toast('没有能添加的课程');
+    try {
+      const next = C.clone(state);
+      next.schedule = T.applyImport(state.schedule, rows, '快速添加');
+      const count = T.preview(state.schedule, rows).added.length;
+      if (undoable('已排进 ' + count + ' 次课', () => commit(next))) { msg.done = rows.length + ' 门课已加入课表，共 ' + count + ' 次课'; drawComposer(); }
+    } catch (error) { toast(error.message); }
+  }
+  function sendComposer(text) {
+    const mode = composer.mode;
+    if (!text.trim()) return;
+    const items = readComposer(mode, text);
+    composer.logs[mode].push({ role: 'user', text }, { role: 'bot', mode, items, text });
+    drawComposer('');
+  }
+  function drawComposer(prefill) {
+    const mode = composer.mode, conf = COMPOSER[mode], log = composer.logs[mode];
+    const sched = T.normalize(state.schedule).settings;
+    const needsTerm = mode === 'course' && (!T.dateOK(sched.semesterStart) || !sched.periods.length);
+    const old = composer.el.querySelector('.composer-input');
+    const draft = prefill !== undefined && prefill !== null ? prefill : old ? old.value : '';
+    const input = h('textarea', { class: 'composer-input', rows: 1, maxLength: 3000, value: draft, placeholder: conf.placeholder, 'aria-label': conf.title,
+      oninput: () => { grow(); hint(); },
+      onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendComposer(input.value); } } });
+    const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; };
+    // A live reading of the line being typed, so a mistake shows before it is sent.
+    const live = h('div', { class: 'composer-live', 'aria-live': 'polite' });
+    const hint = () => {
+      const line = input.value.split('\n').filter((x) => x.trim()).pop() || '';
+      if (!line.trim()) return live.replaceChildren(h('span', { class: 'sub' }, '回车发送 · Shift+回车换行 · 点上面的模板可以直接改'));
+      const item = readComposer(mode, line)[0];
+      const bad = mode === 'task' ? item.error : item.errors.length;
+      live.replaceChildren(...[h('span', { class: 'sub' }, '识别为：'), ...(mode === 'task' ? taskCardView(item).slice(1, 2) : courseCardView(item).slice(1, 2)),
+        bad ? h('span', { class: 'cp-error' }, mode === 'task' ? '还没读到要做的事' : item.errors[0]) : null].filter(Boolean));
+    };
+    const bubble = (msg, i) => {
+      if (msg.role === 'user') return h('div', { class: 'cp-msg me' }, h('div', { class: 'cp-bubble' }, msg.text));
+      const good = msg.mode === 'task' ? msg.items.filter((x) => x.task).length : msg.items.filter((x) => !x.errors.length).length;
+      const clashes = msg.mode === 'course' && msg.items.some((x) => x.clashes && x.clashes.length);
+      return h('div', { class: 'cp-msg bot' }, h('div', { class: 'cp-bubble' },
+        h('p', {}, good === msg.items.length ? '读到了 ' + msg.items.length + (msg.mode === 'task' ? ' 件事' : ' 门课') + '，看一下对不对：' : '有 ' + (msg.items.length - good) + ' 行没读懂，标红的地方可以改了再发：'),
+        msg.items.map((item) => h('div', { class: 'cp-card' + ((msg.mode === 'task' ? item.error : item.errors.length) ? ' bad' : '') }, msg.mode === 'task' ? taskCardView(item) : courseCardView(item))),
+        msg.done ? h('p', { class: 'cp-done' }, icon('check'), msg.done)
+          : h('div', { class: 'cp-actions' },
+            good ? h('button', { class: 'btn dark slim', onclick: () => addFromComposer(msg) }, clashes ? '仍然添加' : good === msg.items.length ? '添加' : '添加能读懂的 ' + good + (msg.mode === 'task' ? ' 件' : ' 门')) : null,
+            h('button', { class: 'btn outline slim', onclick: () => { log.splice(i - 1, 2); drawComposer(msg.text); } }, '改一下'),
+            msg.mode === 'task' && msg.items.length === 1 && msg.items[0].task ? h('button', { class: 'btn ghost slim', title: '用完整的表单继续填写（分段、继续点等）', onclick: () => { const t = msg.items[0].task; composer.el.close(); openTaskDialog(null, { title: t.title, date: t.date || '', time: t.time || '', minutes: t.minutes, space: t.spaceId || '', next: '', tags: t.tags }); } }, '详细填写') : null)));
+    };
+    const switcher = h('div', { class: 'segmented slim composer-switch', role: 'tablist' }, [['course', '课程'], ['task', '任务']].map(([key, label]) =>
+      h('button', { role: 'tab', 'aria-selected': String(mode === key), class: mode === key ? 'on' : '', onclick: () => { composer.mode = key; drawComposer(''); composer.el.querySelector('.composer-input').focus(); } }, label)));
+    const scroll = h('div', { class: 'composer-log' },
+      h('div', { class: 'cp-msg bot' }, h('div', { class: 'cp-bubble intro' }, h('p', {}, conf.intro),
+        needsTerm ? h('p', { class: 'cp-error' }, '还没有设置学期第 1 周和每节课的时间：按节次写的课需要它，按钟点写的课和具体日期的课不需要。', h('button', { class: 'text-btn', onclick: () => timetable.settings(() => drawComposer()) }, ' 去设置 ›')) : null)),
+      log.map(bubble));
+    composer.el.replaceChildren(
+      h('header', { class: 'composer-head' }, h('h2', {}, conf.title), switcher, h('span', { class: 'grow' }),
+        log.length ? h('button', { class: 'text-btn', onclick: () => { composer.logs[mode] = []; drawComposer(); } }, '清空') : null,
+        mode === 'course' ? h('button', { class: 'text-btn', onclick: () => { composer.el.close(); timetable.openImport(); } }, '导入课表文件') : h('button', { class: 'text-btn', onclick: () => { composer.el.close(); openTaskDialog(null); } }, '用表单'),
+        h('button', { class: 'icon-btn', 'aria-label': '关闭', onclick: () => composer.el.close() }, icon('close'))),
+      scroll,
+      h('footer', { class: 'composer-foot' },
+        h('div', { class: 'composer-templates' }, h('span', { class: 'sub' }, '模板'), conf.templates.map(([label, text]) =>
+          h('button', { class: 'cp-template', title: text, onclick: () => { input.value = text; grow(); hint(); input.focus(); } }, h('b', {}, label), h('span', {}, text)))),
+        h('div', { class: 'composer-box' }, input, h('button', { class: 'send', 'aria-label': '发送', onclick: () => sendComposer(input.value) }, icon('send'))),
+        live));
+    requestAnimationFrame(() => { grow(); scroll.scrollTop = scroll.scrollHeight; });
+    hint();
+  }
+
   /* ---------- the workbench: one page that answers "what now, what today, how is the week going" ----------
      Everything here is read from the same data as the other pages; nothing is stored for it. */
   function renderHome() {
@@ -2207,6 +2498,43 @@
     };
     const spacesCard = card('分区', link('+ 新分区', () => openSpaceDialog(null)), h('div', { class: 'home-spaces' }, state.spaces.map(spaceTile)));
 
+    // --- the last seven days: recorded time per day, the running streak and what got finished
+    const last7 = Array.from({ length: 7 }, (_, i) => C.addDays(t, i - 6)).map((d) => ({ d, minutes: state.sessions.filter((x) => x.date === d).reduce((a, x) => a + x.actual, 0) }));
+    const top7 = Math.max(30, ...last7.map((x) => x.minutes));
+    const sum7 = last7.reduce((a, x) => a + x.minutes, 0);
+    const heatDays = C.trajectory(state, t).heat;
+    const run = streaks(heatDays, t);
+    const recentDone = state.tasks.filter((x) => x.done && x.doneAt).sort((a, b) => b.doneAt - a.doneAt).slice(0, 4);
+    const doneThisWeek = state.tasks.filter((x) => x.done && x.doneAt && C.todayISO(new Date(x.doneAt)) >= monday).length;
+    const progressCard = card('最近 7 天', link('回看 ›', () => open('review')),
+      h('div', { class: 'home-streak' },
+        h('span', { class: 'home-streak-icon' + (run.current ? ' on' : '') }, icon('fire')),
+        h('div', {}, h('strong', {}, run.current ? '连续 ' + run.current + ' 天有记录' : '还没有连续记录'), h('small', {}, '最长连续 ' + run.longest + ' 天 · 本周完成 ' + doneThisWeek + ' 项'))),
+      h('div', { class: 'home-spark', role: 'img', 'aria-label': '最近 7 天每天已记录的时间，共 ' + minutesLabel(sum7) },
+        last7.map((x) => h('div', { class: 'home-spark-day' + (x.d === t ? ' today' : ''), title: plainDate(x.d) + '：' + (x.minutes ? '已记录 ' + minutesLabel(x.minutes) : '没有记录') },
+          h('span', { class: 'home-spark-value' }, x.minutes ? shortTime(x.minutes) : ''),
+          h('div', { class: 'home-spark-track' }, h('i', { style: 'height:' + (x.minutes ? Math.max(6, (x.minutes / top7) * 100).toFixed(1) + '%' : '0') })),
+          h('small', {}, x.d === t ? '今' : '日一二三四五六'[new Date(x.d + 'T12:00:00').getDay()])))),
+      h('p', { class: 'sub' }, sum7 ? '7 天共记录 ' + minutesLabel(sum7) + '，平均每天 ' + minutesLabel(Math.round(sum7 / 7)) + '。' : '这 7 天还没有时间记录。开始一次计时，或者补记一段。'),
+      recentDone.length ? h('div', { class: 'home-done' }, h('small', {}, '最近完成'), recentDone.map((x) => h('button', { class: 'home-done-row', onclick: () => openTaskDialog(x) },
+        h('span', { class: 'home-done-check' }, icon('check')), h('span', { class: 'home-done-title' }, x.title), h('small', {}, dateLabel(C.todayISO(new Date(x.doneAt))).split(' ')[0])))) : null);
+
+    // --- goals, only when there are any
+    const goalRows = state.goals.map((g) => {
+      const tasks = state.tasks.filter((x) => x.goalId === g.id);
+      return { g, done: tasks.filter((x) => x.done).length, total: tasks.length };
+    }).sort((a, b) => (a.g.deadline || '9999').localeCompare(b.g.deadline || '9999')).slice(0, 4);
+    const goalsCard = goalRows.length ? card('目标进度', link('全部目标 ›', () => { ui.tabs.all = 'goals'; open('planner', null); }),
+      goalRows.map(({ g, done, total }) => {
+        const sp = space(g.spaceId);
+        const left = g.deadline ? C.daysBetween(t, g.deadline) : null;
+        return h('button', { class: 'home-goal', onclick: () => { ui.tabs[sp ? sp.type : 'all'] = 'goals'; open('planner', sp ? sp.id : null); } },
+          h('span', { class: 'home-goal-top' }, h('span', { class: 'home-goal-title' }, sp ? h('i', { class: 'dot', style: 'background:' + sp.color }) : icon('target'), g.title),
+            h('small', {}, total ? done + ' / ' + total : '还没有任务')),
+          bar(done, total || 1, ''),
+          left !== null ? h('small', { class: left < 0 ? 'overdue' : left <= 7 ? 'soon' : '' }, left < 0 ? '已过期限 ' + -left + ' 天' : left === 0 ? '今天到期' : '还有 ' + left + ' 天 · ' + plainDate(g.deadline)) : null);
+      })) : null;
+
     // --- assistant
     const lastReply = [...state.messages].reverse().find((m) => m.role === 'assistant' && (m.spaceId || null) === null && m.text);
     const pending = state.messages.filter((m) => m.proposal && m.proposal.status === 'pending').length;
@@ -2225,12 +2553,39 @@
     const weekNo = T.dateOK(schedule.semesterStart) && monday >= schedule.semesterStart ? Math.round(C.daysBetween(schedule.semesterStart, monday) / 7) + 1 : 0;
     $('#main').replaceChildren(h('div', { class: 'home-scroll' },
       h('header', { class: 'home-head' }, h('div', {}, h('h2', {}, (state.settings.prefs.name ? state.settings.prefs.name + '，' : '') + hello), h('p', { class: 'sub' }, plainDate(t) + ' 周' + '日一二三四五六'[now.getDay()] + (weekNo && (!schedule.weekCount || weekNo <= schedule.weekCount) ? ' · 第 ' + weekNo + ' 教学周' : ''))),
-        h('div', { class: 'head-actions' }, h('button', { class: 'pill soft', onclick: () => openTaskDialog(null) }, icon('plus'), h('span', {}, '新建任务')), h('button', { class: 'pill soft', onclick: () => openSessionDialog(null) }, icon('plus'), h('span', {}, '补记时间')))),
+        h('div', { class: 'head-actions' }, h('button', { class: 'pill soft', onclick: () => openComposer('task') }, icon('plus'), h('span', {}, '新建任务')), h('button', { class: 'pill soft', onclick: () => openComposer('course') }, icon('plus'), h('span', {}, '添加课程')), h('button', { class: 'pill soft', onclick: () => openSessionDialog(null) }, icon('plus'), h('span', {}, '补记时间')))),
       hero,
-      h('div', { class: 'home-grid' }, h('div', { class: 'home-col' }, todayCard, habitsCard), h('div', { class: 'home-col' }, weekCard, datesCard, cardsCard), h('div', { class: 'home-col' }, assistantCard, moneyCard, spacesCard))));
+      h('div', { class: 'home-grid' })));
+    // The cards go into whichever column is shortest at that moment, so the columns end close together
+    // instead of one running long beside an empty one. Today stays first in the widest column.
+    const grid = $('.home-grid');
+    const width = grid.clientWidth;
+    const count = width >= 1040 ? 3 : width >= 620 ? 2 : 1;
+    homeColumns = count;
+    grid.style.setProperty('--cols', String(count));
+    grid.classList.toggle('wide-first', count > 1);
+    const cols = Array.from({ length: count }, () => grid.appendChild(h('div', { class: 'home-col' })));
+    cols[0].append(todayCard);
+    for (const el of [weekCard, assistantCard, progressCard, datesCard, habitsCard, goalsCard, cardsCard, moneyCard, spacesCard]) {
+      if (!el) continue;
+      const shortest = cols.reduce((a, b) => (b.offsetHeight < a.offsetHeight - 8 ? b : a));
+      shortest.append(el);
+    }
     $('.home-scroll').scrollTop = scrollAt;
     tick();
   }
+  let homeColumns = 0;
+  // A wider or narrower window, or a dragged task column, can change how many columns the workbench uses.
+  let homeResize = null;
+  if (window.ResizeObserver) new ResizeObserver(() => {
+    clearTimeout(homeResize);
+    homeResize = setTimeout(() => {
+      const grid = ui.mode === 'home' && $('.home-grid');
+      if (!grid) return;
+      const width = grid.clientWidth;
+      if ((width >= 1040 ? 3 : width >= 620 ? 2 : 1) !== homeColumns) renderHome();
+    }, 120);
+  }).observe($('#main'));
   // The workbench shows the time of day (the class in progress, what comes next), so it is redrawn each minute when nothing is being typed.
   setInterval(() => { if (ui.mode === 'home' && !$('#dialog').open && !$('#panel').open && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) renderHome(); }, 60000);
 
@@ -2355,7 +2710,7 @@
   }
   function fitListWidth(raw) {
     if (raw < LIST.closeBelow) return 0;
-    return Math.round(Math.min(LIST.max, Math.max(LIST.min, raw), shell.clientWidth - 96 - 420));
+    return Math.round(Math.min(LIST.max, Math.max(LIST.min, raw), shell.clientWidth - ($(".rail-col").offsetWidth || 96) - 420));
   }
   const saveListWidth = (width) => { if (width !== state.settings.prefs.listWidth) change((s) => { s.settings.prefs.listWidth = width; }); };
   splitter.setAttribute('aria-valuemin', '0');
