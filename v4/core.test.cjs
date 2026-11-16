@@ -787,3 +787,27 @@ test('trajectory compares time by tag, counting a record toward each tag of its 
   assert.strictEqual(tags.overlap, true);
   assert.strictEqual(C.trajectory(C.emptyState(), TODAY).tags, null);
 });
+
+test('reviewSummary reads a period: totals, busiest weekday and hour, areas, task ranking, the period before', () => {
+  const s = C.emptyState();
+  s.tasks.push({ id: 'a', title: '复习单片机', date: null, minutes: 30, spaceId: 'space_1', done: true, doneAt: new Date('2026-11-12T10:00:00').getTime(), createdAt: 1 });
+  s.sessions.push(
+    { id: '1', taskId: 'a', title: '复习单片机', date: '2026-11-11', actual: 50, spaceId: 'space_1', hour: 14 },
+    { id: '2', taskId: 'a', title: '复习单片机', date: '2026-11-12', actual: 30, spaceId: 'space_1', hour: 14 },
+    { id: '3', taskId: null, title: '看论文', date: '2026-11-12', actual: 20, spaceId: null, hour: null },
+    { id: '4', taskId: null, title: '更早', date: '2026-11-05', actual: 45, spaceId: null, hour: 9 });
+  const r = C.reviewSummary(s, '2026-11-09', '2026-11-15');
+  assert.strictEqual(r.total, 100);
+  assert.strictEqual(r.previous, 45);
+  assert.strictEqual(r.activeDays, 2);
+  assert.strictEqual(r.done, 1);
+  assert.strictEqual(r.series.length, 7);
+  assert.deepStrictEqual(r.series[3], { from: '2026-11-12', to: '2026-11-12', minutes: 50, done: 1 });
+  assert.strictEqual(r.bestWeekday, 2); // Wednesday the 11th: 50 against Thursday's 50 — the earlier one wins a tie
+  assert.deepStrictEqual(r.peakHour, { hour: 14, minutes: 80 });
+  assert.deepStrictEqual(r.areas.map((a) => [a.name, a.minutes]), [['学习', 80], ['未分区', 20]]);
+  assert.deepStrictEqual(r.tasks.map((t) => [t.title, t.minutes, t.sessions]), [['复习单片机', 80, 2], ['看论文', 20, 1]]);
+  const weekly = C.reviewSummary(s, '2026-11-02', '2026-11-15', { bucket: 'week' });
+  assert.deepStrictEqual(weekly.series.map((x) => x.minutes), [45, 100]);
+  assert.strictEqual(C.reviewSummary(C.emptyState(), '2026-11-09', '2026-11-15').bestWeekday, null);
+});

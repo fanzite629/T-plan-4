@@ -635,6 +635,53 @@
       recordedDays: Object.keys(perDay).filter((d) => d >= heatStart && d <= today && perDay[d] > 0).length };
   }
 
+  /* ---------- the recap of one period: totals, the busiest weekday and hour, where the time went ----------
+     Facts only. `series` is one entry per day, or per week when `bucket` is 'week'. `previous` is the
+     recorded time of the equally long period just before, for comparison. */
+  function reviewSummary(state, from, to, { bucket = 'day' } = {}) {
+    const inRange = (d) => d >= from && d <= to;
+    const sessions = state.sessions.filter((x) => inRange(x.date));
+    const length = daysBetween(from, to) + 1;
+    const days = Array.from({ length }, (_, i) => addDays(from, i));
+    const perDay = {}, donePerDay = {};
+    for (const x of sessions) perDay[x.date] = (perDay[x.date] || 0) + x.actual;
+    const done = state.tasks.filter((t) => t.done && t.doneAt && inRange(todayISO(new Date(t.doneAt))));
+    for (const t of done) { const d = todayISO(new Date(t.doneAt)); donePerDay[d] = (donePerDay[d] || 0) + 1; }
+    const step = bucket === 'week' ? 7 : 1;
+    const series = [];
+    for (let i = 0; i < days.length; i += step) {
+      const part = days.slice(i, i + step);
+      series.push({ from: part[0], to: part[part.length - 1], minutes: sum(part, (d) => perDay[d] || 0), done: sum(part, (d) => donePerDay[d] || 0) });
+    }
+    const byWeekday = Array(7).fill(0); // Monday first
+    for (const d of days) byWeekday[isoWeekday(d) - 1] += perDay[d] || 0;
+    const byHour = {};
+    for (const x of sessions) if (Number.isInteger(x.hour)) byHour[x.hour] = (byHour[x.hour] || 0) + x.actual;
+    const peak = Object.entries(byHour).sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
+    const total = sum(sessions, (x) => x.actual);
+    const taskOf = new Map(state.tasks.map((t) => [t.id, t]));
+    const rank = new Map();
+    for (const x of sessions) {
+      const task = taskOf.get(x.taskId);
+      const key = task ? task.id : 'title:' + (x.title || '');
+      const row = rank.get(key) || { taskId: task ? task.id : null, title: task ? task.title : x.title || '没有标题的记录', spaceId: state.spaces.some((sp) => sp.id === x.spaceId) ? x.spaceId : null, minutes: 0, sessions: 0 };
+      row.minutes += x.actual; row.sessions++;
+      rank.set(key, row);
+    }
+    const tasks = [...rank.values()].sort((a, b) => b.minutes - a.minutes || a.title.localeCompare(b.title));
+    const areas = [...state.spaces.map((sp) => ({ id: sp.id, name: sp.name, color: sp.color })), { id: null, name: '未分区', color: null }]
+      .map((a) => { const mine = tasks.filter((t) => t.spaceId === a.id); return { ...a, minutes: sum(mine, (t) => t.minutes), tasks: mine.slice(0, 3).map((t) => t.title) }; })
+      .filter((a) => a.minutes > 0).sort((a, b) => b.minutes - a.minutes);
+    const best = days.reduce((b, d) => ((perDay[d] || 0) > b.minutes ? { date: d, minutes: perDay[d] } : b), { date: null, minutes: 0 });
+    const top = Math.max(...byWeekday);
+    return {
+      from, to, length, total, sessions: sessions.length, activeDays: days.filter((d) => perDay[d] > 0).length, done: done.length,
+      previous: sum(state.sessions.filter((x) => x.date >= addDays(from, -length) && x.date < from), (x) => x.actual),
+      series, byWeekday, bestWeekday: top > 0 ? byWeekday.indexOf(top) : null, bestDay: best.date ? best : null,
+      peakHour: peak ? { hour: Number(peak[0]), minutes: peak[1] } : null, areas, tasks: tasks.slice(0, 8),
+    };
+  }
+
   /* ---------- reading a T计划 v3 export ----------
      v3 kept tasks, time records and notes in other shapes. This maps what has a home in v4 and
      reports what does not, so nothing is dropped silently. */
@@ -1477,6 +1524,6 @@
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,
     buildProfile, buildContext, history, parseLine, parseTaskLine, cleanTags, takeTags, parseWhen,
     REPEAT_AHEAD, takeRepeat, cleanRule, occursOn, nextOccurrences, repeatLabel, materializeRepeats, addRepeat, updateRepeat, stopRepeat,
-    parseDateLine, parseMoneyLine, freeSlots, spreadTasks, applySpread, splitIntoSteps, localReply,
+    parseDateLine, parseMoneyLine, freeSlots, spreadTasks, applySpread, reviewSummary, splitIntoSteps, localReply,
   };
 });
