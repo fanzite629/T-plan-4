@@ -94,6 +94,9 @@
     search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm5-2 4 4',
     edit: 'M4 20h4L19 9l-4-4L4 16v4Zm10-14 4 4',
     chev: 'M7 10l5 5 5-5',
+    repeat: 'M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4',
+    clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-13v4.5l3 2',
+    spread: 'M4 7h9M4 12h6M4 17h12M17 5l3 3-3 3',
     sidebar: 'M4 5h16v14H4zM9.500 5v14M15 10l-2 2 2 2',
     fire: 'M12 21c-3.900 0-6.500-2.600-6.500-6.200 0-3.400 2.600-5.400 3.800-8.800 1.700 1.400 2.300 3.200 2.200 4.800 1.100-.6 1.900-1.900 2-3.400 2.400 1.900 5 4.600 5 7.700 0 3.400-2.700 5.900-6.500 5.900Z',
     target: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-4a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-4a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z',
@@ -254,13 +257,63 @@
     });
   }
 
-  /* ---------- rail: views and spaces, grouped and foldable ----------
-     The fixed views form one group and the spaces are grouped by type. A folded group shrinks to its
-     avatars stacked on top of each other; a click opens it again. The whole rail can also be narrowed
-     to icons only. Both choices are kept in the preferences. */
-  const SPACE_GROUPS = [['study', '学习'], ['project', '项目'], ['habit', '习惯'], ['life', '生活']];
-  const spaceType = (sp) => (SPACE_GROUPS.some(([key]) => key === sp.type) ? sp.type : 'study');
+  /* ---------- rail: the views, and the spaces as an avatar group ----------
+     A group is either a plain column of items or an avatar group: round avatars overlapping to the
+     right, each covering a third of the one before, at most four circles, the last one "+N" when
+     there are more. A click fans the avatars out to the right one after another, 40 ms apart, with
+     the names fading in below; another click gathers them back from right to left. The fanned row
+     floats above the page, since the rail is too narrow for it. The arrow beside a group's name
+     switches it between the two forms; that choice and the narrow rail are kept in the preferences. */
+  const spaceType = (sp) => (C.SPACE_TYPES.some((x) => x.id === sp.type) ? sp.type : 'study');
   function setRailPref(mutate) { change((s) => { s.settings.prefs.railFolded = { ...(s.settings.prefs.railFolded || {}) }; mutate(s.settings.prefs); }); }
+  const FAN = { size: 44, gap: 14, pad: 10, step: 40, move: 260 };
+  const fan = { key: null, el: null, timer: null };
+  const fanAnchor = () => (fan.key ? document.querySelector('.rail-stack[data-fan="' + fan.key + '"]') : null);
+  function closeFan(now) {
+    if (!fan.el) return;
+    const el = fan.el, count = el.querySelectorAll('.rail-fan-item').length;
+    const finish = () => { el.remove(); if (fan.el === el) { const a = fanAnchor(); if (a) { a.classList.remove('fanned'); a.setAttribute('aria-expanded', 'false'); } fan.el = null; fan.key = null; } };
+    clearTimeout(fan.timer);
+    if (now || matchMedia('(prefers-reduced-motion: reduce)').matches) return finish();
+    if (el.classList.contains('closing')) return;
+    el.classList.remove('open');
+    el.classList.add('closing');
+    fan.timer = setTimeout(finish, FAN.move + (count - 1) * FAN.step + 40);
+  }
+  function openFan(key, name, items, anchor) {
+    closeFan(true);
+    const faces = anchor.querySelector('.rail-stack-faces').getBoundingClientRect();
+    const small = anchor.querySelector('.avatar').getBoundingClientRect().width;
+    const railBox = $('#rail').getBoundingClientRect();
+    const n = items.length, shown = n > 4 ? 3 : n;
+    // The row opens beside the rail (below it when the rail lies along the top), so the group itself stays
+    // where it was and a second click on it gathers the row back.
+    const sideways = getComputedStyle($('#rail')).flexDirection !== 'row';
+    const width = 2 * FAN.pad + items.length * FAN.size + (items.length - 1) * FAN.gap;
+    const left = sideways ? railBox.right + 6 : Math.max(8, Math.min(faces.left - FAN.pad, innerWidth - width - 8)); // pulled left when the row would run off the window
+    const top = sideways ? Math.max(8, Math.min(innerHeight - 96, faces.top - FAN.pad - (FAN.size - small) / 2)) : railBox.bottom + 6;
+    const pileX = faces.left + (faces.width - (small + (Math.min(n, 4) - 1) * small * (2 / 3))) / 2, pileY = faces.top + (faces.height - small) / 2;
+    const el = h('div', { class: 'rail-fan', role: 'group', 'aria-label': name + '，共 ' + n + ' 项',
+      style: 'left:' + left + 'px;top:' + top + 'px;max-width:' + Math.max(160, innerWidth - left - 8) + 'px;--scale:' + (small / FAN.size).toFixed(4) + ';--dy:' + (pileY - top - FAN.pad).toFixed(1) + 'px' });
+    items.forEach((x, i) => {
+      const slot = Math.min(i, n > 4 ? 3 : i); // where it sits in the pile; the ones behind "+N" share its place
+      const dx = pileX + slot * small * (2 / 3) - (left + FAN.pad + i * (FAN.size + FAN.gap));
+      el.append(h('button', { class: 'rail-fan-item' + (x.active ? ' active' : '') + (i >= shown ? ' extra' : ''), style: '--dx:' + dx.toFixed(1) + 'px;--i:' + i + ';--r:' + (n - 1 - i), title: x.title || x.label, 'aria-label': x.label, 'aria-current': x.active ? 'page' : null,
+        onclick: () => { closeFan(); x.onclick(); } },
+        h('span', { class: 'avatar' + (x.ink ? ' ink' : ''), style: 'background:' + x.color }, x.face), h('span', { class: 'rail-fan-name' }, x.label)));
+    });
+    if (n > 4) el.append(h('span', { class: 'rail-fan-more', 'aria-hidden': 'true', style: 'left:' + (pileX + 3 * small * (2 / 3) - left).toFixed(1) + 'px;top:' + (pileY - top).toFixed(1) + 'px;width:' + small + 'px;height:' + small + 'px' }, '+' + (n - 3)));
+    document.body.append(el);
+    fan.key = key; fan.el = el; fan.at = Date.now();
+    anchor.classList.add('fanned');
+    anchor.setAttribute('aria-expanded', 'true');
+    if (el.scrollWidth > el.clientWidth + 1) el.classList.add('wide'); // too many for the window: the row scrolls sideways
+    el.getBoundingClientRect(); // the piled-up starting position is laid out before the spread begins
+    el.classList.add('open');
+  }
+  document.addEventListener('pointerdown', (e) => { if (fan.el && !fan.el.contains(e.target) && !(e.target instanceof Element && e.target.closest('.rail-stack'))) closeFan(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && fan.el && !document.querySelector('dialog[open]')) { const a = fanAnchor(); closeFan(); if (a) a.focus(); } });
+  window.addEventListener('resize', () => closeFan(true));
   function renderRail() {
     const prefs = state.settings.prefs;
     const folded = prefs.railFolded || {};
@@ -272,32 +325,39 @@
       { label: '课表', title: '课表', color: '#567897', face: '课', active: ui.mode === 'timetable', onclick: go('timetable') },
       { label: '本周', title: '本周安排：七天的任务、周重点和可投入时间', color: '#8a6f5a', face: '周', active: ui.mode === 'week', onclick: go('week') },
       { label: '收支', title: '收支：收入、支出、余额走势和存钱罐', color: '#b0564a', face: '收', active: ui.mode === 'money', onclick: go('money') },
-      { label: '回看', title: '回看：每周的时间记录、完成情况和反思', color: '#7a8496', face: icon('bars'), active: ui.mode === 'review', onclick: go('review') },
-    ];
+      { label: '回看', title: '回看：一段时间的回顾、时间去向和记录', color: '#7a8496', face: 'bars', active: ui.mode === 'review', onclick: go('review') },
+    ].map((x) => ({ ...x, face: x.face === 'bars' ? icon('bars') : x.face }));
+    // Spaces of the same kind sit next to each other.
+    const order = C.SPACE_TYPES.map((x) => x.id);
+    const spaces = [...state.spaces].sort((a, b) => order.indexOf(spaceType(a)) - order.indexOf(spaceType(b))).map((sp) => ({
+      label: sp.name, title: sp.name + ' · ' + C.SPACE_TYPES.find((x) => x.id === spaceType(sp)).name, color: sp.color, face: sp.name.slice(0, 1), active: ui.mode === 'planner' && ui.space === sp.id, onclick: go('planner', sp.id) }));
     const item = (x) => h('button', { class: 'rail-item' + (x.active ? ' active' : ''), title: x.title || x.label, 'aria-label': x.label, 'aria-current': x.active ? 'page' : null, onclick: x.onclick },
-      h('span', { class: 'avatar' + (x.ink ? ' ink' : ''), style: 'background:' + x.color }, x.face), h('span', { class: 'rail-label' }, x.label));
-    const group = (key, name, items) => {
-      const isFolded = !!folded[key];
+      h('span', { class: 'avatar' + (x.ink ? ' ink' : ''), style: 'background:' + x.color }, x.face.cloneNode ? x.face.cloneNode(true) : x.face), h('span', { class: 'rail-label' }, x.label));
+    const group = (key, name, items, pileByDefault) => {
+      const piled = folded[key] === undefined ? pileByDefault : !!folded[key];
       const active = items.some((x) => x.active);
-      const shown = items.slice(0, compact ? 1 : 3);
-      const head = h('button', { class: 'rail-group-head', 'aria-expanded': String(!isFolded), title: (isFolded ? '展开' : '折叠') + '「' + name + '」', onclick: () => setRailPref((p) => { p.railFolded[key] = !isFolded; }) },
+      // The current page comes first, so it stays visible in the pile and leads the fanned row.
+      const sorted = [...items].sort((a, b) => Number(b.active) - Number(a.active)).map((x) => ({ ...x, face: x.face.cloneNode ? x.face.cloneNode(true) : x.face }));
+      const n = sorted.length, faces = n > 4 ? sorted.slice(0, 3) : sorted;
+      const head = h('button', { class: 'rail-group-head', 'aria-pressed': String(piled), title: piled ? '把「' + name + '」排成一列' : '把「' + name + '」叠成头像组', onclick: () => { closeFan(true); setRailPref((p) => { p.railFolded[key] = !piled; }); } },
         h('span', { class: 'rail-group-name' }, name), icon('chev'));
-      const body = isFolded
-        ? h('button', { class: 'rail-item rail-stack' + (active ? ' active' : ''), title: name + '：' + items.map((x) => x.label).join('、') + '（点一下展开）', 'aria-label': '展开「' + name + '」，共 ' + items.length + ' 项' + (active ? '，当前页面在里面' : ''),
-          onclick: () => setRailPref((p) => { p.railFolded[key] = false; }) },
-          h('span', { class: 'rail-stack-faces' }, shown.map((x, i) => h('span', { class: 'avatar' + (x.ink ? ' ink' : ''), style: 'background:' + x.color + ';z-index:' + (10 - i) }, x.face)),
-            items.length > shown.length ? h('span', { class: 'avatar more', style: 'z-index:1' }, '+' + (items.length - shown.length)) : null),
-          h('span', { class: 'rail-label' }, name + ' · ' + items.length))
-        : items.map(item);
-      return h('div', { class: 'rail-group' + (isFolded ? ' folded' : ''), role: 'group', 'aria-label': name }, head, body);
+      const pile = () => {
+        const el = h('button', { class: 'rail-item rail-stack' + (active ? ' active' : '') + (fan.key === key && fan.el ? ' fanned' : ''), 'data-fan': key, 'aria-expanded': String(fan.key === key && !!fan.el),
+          title: name + '：' + items.map((x) => x.label).join('、'), 'aria-label': name + '，共 ' + n + ' 项，点一下展开' + (active ? '；当前页面在里面' : ''),
+          onclick: () => { if (fan.key === key && fan.el) closeFan(); else openFan(key, name, sorted, el); } },
+        h('span', { class: 'rail-stack-faces' }, faces.map((x) => h('span', { class: 'avatar' + (x.ink ? ' ink' : ''), style: 'background:' + x.color }, x.face.cloneNode ? x.face.cloneNode(true) : x.face)),
+          n > 4 ? h('span', { class: 'avatar more' }, '+' + (n - 3)) : null),
+        h('span', { class: 'rail-stack-close', 'aria-hidden': 'true' }, icon('close')),
+        h('span', { class: 'rail-label' }, name + ' · ' + n));
+        return el;
+      };
+      return h('div', { class: 'rail-group' + (piled ? ' folded' : ''), role: 'group', 'aria-label': name }, head, piled ? pile() : items.map(item));
     };
-    const spaceItems = (type) => state.spaces.filter((sp) => spaceType(sp) === type).map((sp) => ({
-      label: sp.name, color: sp.color, face: sp.name.slice(0, 1), active: ui.mode === 'planner' && ui.space === sp.id, onclick: go('planner', sp.id) }));
     $('#rail').replaceChildren(
       h('button', { class: 'rail-toggle', 'aria-pressed': String(compact), title: compact ? '展开导航（显示名称）' : '收起导航（只显示头像）', 'aria-label': compact ? '展开导航' : '收起导航',
-        onclick: () => setRailPref((p) => { p.railCompact = !compact; }) }, icon('sidebar')),
-      group('views', '视图', views),
-      ...SPACE_GROUPS.map(([type, name]) => { const items = spaceItems(type); return items.length ? group(type, name, items) : null; }),
+        onclick: () => { closeFan(true); setRailPref((p) => { p.railCompact = !compact; }); } }, icon('sidebar')),
+      group('views', '视图', views, false),
+      spaces.length ? group('spaces', '分区', spaces, true) : null,
       h('button', { class: 'rail-item', title: '新分区', 'aria-label': '新分区', onclick: () => openSpaceDialog(null) },
         h('span', { class: 'avatar dashed' }, icon('plus')), h('span', { class: 'rail-label' }, '新分区')),
     );
@@ -408,6 +468,7 @@
           sp && !ui.space ? h('span', { class: 'task-space' }, sp.name + ' ·') : null,
           h('span', { class: overdue ? 'overdue' : '' }, overdue ? '已过期 · ' + whenLabel(t) : whenLabel(t)),
           h('span', {}, '· ' + minutesLabel(t.minutes)),
+          t.repeatId ? h('span', { class: 'task-repeat', title: '重复任务：' + C.repeatLabel((state.repeats.find((r) => r.id === t.repeatId) || {}).rule) }, icon('repeat')) : null,
           t.steps ? h('span', {}, '· ' + stepsDone + '/' + t.steps.length + ' 段') : null),
         t.tags ? h('span', { class: 'task-tags' }, tagList(t.tags)) : null),
       !t.done && !state.timer ? h('button', { class: 'play', 'aria-label': '开始计时：' + t.title, title: '开始计时', onclick: () => beginTimer(t.id) }, icon('play')) : null);
@@ -702,7 +763,7 @@
       due ? h('button', { class: 'next-row', onclick: () => startReview(), title: '开始复习' }, h('b', { class: 'soon' }, String(due), h('small', {}, ' 张')), h('span', { class: 'next-text' }, '复习卡片到期', h('small', {}, '点这里开始复习'))) : null,
     ].filter(Boolean);
     return h('section', { class: 'up-next', id: 'upNext', 'aria-label': '接下来' },
-      h('div', { class: 'up-next-head' }, h('span', {}, '接下来'), h('button', { class: 'text-btn', onclick: () => openDateDialog(null) }, '+ 考试 / 截止日期')),
+      h('div', { class: 'up-next-head' }, h('span', {}, '接下来'), h('button', { class: 'text-btn', onclick: () => openComposer('date') }, '+ 考试 / 截止日期')),
       rows.length ? rows : h('p', { class: 'sub' }, '记下考试或截止日期，这里会显示倒计时。'));
   }
   // The clock moves on without any change to the data, so this one block is refreshed on its own.
@@ -1275,22 +1336,6 @@
   });
 
   /* ---------- review ---------- */
-  function profileLines() {
-    const p = C.buildProfile(state, today());
-    const prefs = state.settings.prefs;
-    const lines = [];
-    lines.push('你说：一次专注 ' + prefs.segment + ' 分钟' + (prefs.dailyMinutes ? '，每天可安排 ' + minutesLabel(prefs.dailyMinutes) : '') + (prefs.bestTime ? '，' + prefs.bestTime + '效率最高' : '') + '。');
-    if (p.actualVsPlanned) lines.push('实际用时是计划的 ' + Math.round(p.actualVsPlanned * 100) + '%' + (p.actualVsPlanned > 1.15 ? '，你通常比计划慢，助手会把时间留多一些。' : p.actualVsPlanned < 0.85 ? '，你通常比计划快。' : '，估计比较准。'));
-    if (p.typicalFocusMinutes) lines.push('你真实的一段专注大约 ' + p.typicalFocusMinutes + ' 分钟。');
-    if (p.focusMinutesByTimeOfDay) {
-      const [best, minutes] = Object.entries(p.focusMinutesByTimeOfDay).sort((a, b) => b[1] - a[1])[0];
-      lines.push('记录里你在' + best + '专注得最多（' + minutesLabel(minutes) + '）。');
-    }
-    if (p.last14Days) lines.push('最近 14 天安排了 ' + p.last14Days.planned + ' 项，完成 ' + p.last14Days.done + ' 项。');
-    if (p.difficultyFeedback) lines.push('你的反馈：太简单 ' + p.difficultyFeedback.easy + ' 次，正好 ' + p.difficultyFeedback.ok + ' 次，太难 ' + p.difficultyFeedback.hard + ' 次。');
-    if (p.sessionsRecorded < 3) lines.push('计时记录还只有 ' + p.sessionsRecorded + ' 段。用计时完成 3 段以上，助手就能开始根据你的真实速度调整。');
-    return lines;
-  }
   /* Seven narrow day strips side by side. Clicking one widens it while the others narrow together;
      its details fade in only after the width has settled, so text is never squeezed mid-animation. */
   let reviewDay = null;
@@ -1329,6 +1374,7 @@
     return box;
   }
   let reviewOffset = 0; // 0 is this week, -1 the week before, and so on
+  let reviewBalanceBy = 'space'; // the growth card reads time by space or by tag
   /* ---------- the longer view on the review page: a calendar of recorded time, weekly totals, and where the time went ---------- */
   const SVG_NS = 'http://www.w3.org/2000/svg';
   function sv(tag, attrs, ...children) {
@@ -1426,18 +1472,25 @@
     const thisWeek = data.weeks[data.weeks.length - 1].minutes, lastWeek = data.weeks[data.weeks.length - 2].minutes;
     const trend = !thisWeek && !lastWeek ? null : !lastWeek ? '上周没有记录' : (thisWeek >= lastWeek ? '比上周多 ' : '比上周少 ') + minutesLabel(Math.abs(thisWeek - lastWeek));
 
-    // --- balance: the same unit on every axis, the last four weeks over the four before, then the same as ranked bars
+    // --- balance: the same unit on every axis, the last four weeks over the four before, then the same as ranked bars.
+    // It can be read by space or, once tasks carry tags, by tag.
+    const byTag = reviewBalanceBy === 'tag' && !!data.tags;
+    const source = byTag ? data.tags : data.balance;
+    const what = byTag ? '标签' : '分区';
+    const color = (a) => (byTag ? (a.tag ? tagColor(a.tag) : 'var(--t3)') : (space(a.id) || {}).color || 'var(--t3)');
+    const balanceSwitch = data.tags ? h('div', { class: 'segmented slim', role: 'tablist', 'aria-label': '按什么看' }, [['space', '分区'], ['tag', '标签']].map(([key, label]) =>
+      h('button', { role: 'tab', 'aria-selected': String((byTag ? 'tag' : 'space') === key), class: (byTag ? 'tag' : 'space') === key ? 'on' : '', onclick: () => { reviewBalanceBy = key; render(); } }, label))) : null;
     let balance;
-    if (!data.balance) balance = h('p', { class: 'empty' }, '至少有三个分区时，这里会画出时间在各分区之间的分布。');
+    if (!source) balance = h('p', { class: 'empty' }, '至少有三个分区时，这里会画出时间在各分区之间的分布。');
     else {
-      const axes = data.balance.axes, n = axes.length, size = 300, cx = size / 2, cy = size / 2 + 4, R = 96;
+      const axes = source.axes, n = axes.length, size = 300, cx = size / 2, cy = size / 2 + 4, R = 96;
       const rawMax = Math.max(30, ...axes.map((a) => Math.max(a.recent, a.previous)));
       const step = rawMax <= 60 ? 15 : rawMax <= 240 ? 60 : rawMax <= 600 ? 120 : 300;
       const max = Math.ceil(rawMax / step) * step;
       const at = (i, value) => { const angle = -Math.PI / 2 + (i / n) * Math.PI * 2, r = (value / max) * R; return [cx + Math.cos(angle) * r, cy + Math.sin(angle) * r]; };
       const points = (key) => axes.map((a, i) => at(i, a[key]).map((v) => v.toFixed(1)).join(',')).join(' ');
-      const color = (a) => (space(a.id) || {}).color || 'var(--t3)';
-      const svg = sv('svg', { viewBox: '0 0 ' + size + ' ' + size, class: 'viz-radar', role: 'img', 'aria-label': '各分区已记录时间：最近 4 周与之前 4 周的对比。旁边的条形列出了同样的数字。' },
+      // A radar needs at least three axes; with fewer, the ranked bars alone say it better.
+      const svg = n < 3 ? null : sv('svg', { viewBox: '0 0 ' + size + ' ' + size, class: 'viz-radar', role: 'img', 'aria-label': '各' + what + '已记录时间：最近 4 周与之前 4 周的对比。旁边的条形列出了同样的数字。' },
         [0.25, 0.5, 0.75, 1].map((f, k) => sv('polygon', { class: 'viz-ring' + (k === 3 ? ' outer' : ''), points: axes.map((_, i) => at(i, max * f).map((v) => v.toFixed(1)).join(',')).join(' ') })),
         axes.map((_, i) => { const [x, y] = at(i, max); return sv('line', { class: 'viz-ring', x1: cx, y1: cy, x2: x.toFixed(1), y2: y.toFixed(1) }); }),
         sv('polygon', { class: 'viz-shape previous', points: points('previous') }),
@@ -1455,17 +1508,18 @@
       const barMax = Math.max(1, ...axes.map((a) => Math.max(a.recent, a.previous)));
       const ranked = [...axes].sort((a, b) => b.recent - a.recent || b.previous - a.previous);
       balance = [
-        h('div', { class: 'viz-legend' }, h('span', {}, h('i', { class: 'viz-key recent' }), '最近 4 周 · ' + minutesLabel(data.balance.recentTotal)), h('span', {}, h('i', { class: 'viz-key previous' }), '之前 4 周 · ' + minutesLabel(data.balance.previousTotal))),
-        h('div', { class: 'viz-balance' }, svg,
-          h('ul', { class: 'viz-rank', 'aria-label': '各分区已记录时间' }, ranked.map((a) => {
-            const share = data.balance.recentTotal ? Math.round((a.recent / data.balance.recentTotal) * 100) : 0;
+        h('div', { class: 'viz-legend' }, h('span', {}, h('i', { class: 'viz-key recent' }), '最近 4 周 · ' + minutesLabel(source.recentTotal)), h('span', {}, h('i', { class: 'viz-key previous' }), '之前 4 周 · ' + minutesLabel(source.previousTotal))),
+        h('div', { class: 'viz-balance' + (svg ? '' : ' bars-only') }, svg,
+          h('ul', { class: 'viz-rank', 'aria-label': '各' + what + '已记录时间' }, ranked.map((a) => {
+            const share = source.recentTotal ? Math.round((a.recent / source.recentTotal) * 100) : 0;
             return h('li', {},
               h('span', { class: 'viz-rank-name' }, h('i', { style: 'background:' + color(a) }), a.name),
-              h('span', { class: 'viz-rank-value' }, minutesLabel(a.recent), data.balance.recentTotal ? h('small', {}, share + '%') : null),
+              h('span', { class: 'viz-rank-value' }, minutesLabel(a.recent), source.recentTotal ? h('small', {}, share + '%') : null),
               h('span', { class: 'viz-rank-track' }, h('i', { class: 'recent', style: 'width:' + ((a.recent / barMax) * 100).toFixed(1) + '%' }), h('i', { class: 'previous', style: 'width:' + ((a.previous / barMax) * 100).toFixed(1) + '%' })),
               h('small', { class: 'viz-rank-prev' }, '之前 4 周 ' + minutesLabel(a.previous)));
           }))),
-        h('p', { class: 'viz-note' }, '雷达图每条轴是一个分区，单位都是已记录的时间；最外圈是 ' + minutesLabel(max) + '。'),
+        h('p', { class: 'viz-note' }, (svg ? '雷达图每条轴是一个' + what + '，单位都是已记录的时间；最外圈是 ' + minutesLabel(max) + '。' : '')
+          + (byTag ? '按任务现在的标签统计；没有关联任务的补记算作「没有标签」。' + (source.overlap ? '一个任务有几个标签，它的时间就同时算进每个标签，所以百分比加起来会超过 100%。' : '') : '')),
       ];
     }
     root.append(
@@ -1477,7 +1531,7 @@
       h('div', { class: 'viz-grid' },
         block('每周已记录的时间 · 最近 12 周', trend ? h('span', { class: 'viz-trend' + (thisWeek >= lastWeek ? ' up' : ' down') }, trend) : null, weekly,
           h('p', { class: 'viz-note' }, (peak.minutes ? '最高的一周是 ' + plainDate(peak.monday) + ' 那周，' + minutesLabel(peak.minutes) + '。' : '这 12 周还没有记录。') + (average ? '虚线是 12 周平均。' : ''))),
-        block('时间花在哪些分区', null, balance)),
+        block('时间花在哪些' + what, balanceSwitch, balance)),
       tip);
     return root;
   }
@@ -1647,7 +1701,7 @@
     // --- piggy bank
     const savedList = m.entries.filter((e) => e.kind === 'saved').sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0));
     const piggyCard = h('section', { class: 'card piggy-card' },
-      h('div', { class: 'card-head' }, h('h3', {}, '存钱罐'), h('button', { class: 'pill soft', onclick: () => openMoneyDialog(null, { kind: 'saved' }) }, icon('plus'), '忍住了一次')),
+      h('div', { class: 'card-head' }, h('h3', {}, '存钱罐'), h('button', { class: 'pill soft', onclick: () => openComposer('money', '忍住没买 ') }, icon('plus'), '忍住了一次')),
       h('div', { class: 'piggy-total' }, h('strong', {}, money(sum.piggy.total)), h('span', { class: 'sub' }, sum.piggy.count ? '想花但忍住了 ' + sum.piggy.count + ' 次 · 本月 ' + money(sum.month.saved) + '（' + sum.month.savedCount + ' 次）' : '想买一样东西但忍住了，就在这里记一笔。它不改变余额，只是让你看到省下了多少。')),
       savedList.length ? h('div', { class: 'ledger' }, savedList.slice(0, 5).map((e) => h('button', { class: 'ledger-row', onclick: () => openMoneyDialog(e) }, h('span', { class: 'sub' }, dateLabel(e.date).split(' ')[0]), h('span', { class: 'ledger-what' }, e.note || e.category), h('b', { class: 'amt piggy' }, money(e.amount)))),
         flow.saved.items.length ? h('p', { class: 'sub' }, '本月忍住最多的是：' + flow.saved.items.slice(0, 3).map((x) => x.category + ' ' + money(x.amount)).join('、')) : null) : null);
@@ -1677,76 +1731,270 @@
     root.append(figures, h('div', { class: 'money-grid' }, h('div', { class: 'review-col' }, chartCard, ledgerCard), h('div', { class: 'review-col' }, flowCard, piggyCard)), tip);
     $('#main').replaceChildren(
       h('header', { class: 'tt-header' }, h('div', {}, h('h2', {}, '收支'), h('p', { class: 'sub' }, '红色是流入，绿色是流出。只是记录，不连接银行，也不会动真实的钱。' + (m.share ? '助手可以看到收支概况。' : '这些数字不会发给模型。'))),
-        h('div', { class: 'tt-actions' }, h('button', { class: 'btn outline', onclick: openMoneySettings }, '初始资金与生活费'), h('button', { class: 'btn outline', onclick: () => openMoneyDialog(null, { kind: 'saved' }) }, '忍住了一次'), h('button', { class: 'btn dark', onclick: () => openMoneyDialog(null) }, icon('plus'), '记一笔'))),
+        h('div', { class: 'tt-actions' }, h('button', { class: 'btn outline', onclick: openMoneySettings }, '初始资金与生活费'), h('button', { class: 'btn outline', onclick: () => openComposer('money', '忍住没买 ') }, '忍住了一次'), h('button', { class: 'btn dark', onclick: () => openComposer('money') }, icon('plus'), '记一笔'))),
       root);
     root.scrollTop = scrollAt;
     if (typing) { const box = $('.money-search'); box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
   }
 
   /* The review is a page of its own: one week at a time, facts on the left, the user's own words on the right. */
+  /* ---------- the review page ----------
+     Top to bottom: a recap in words, a few large figures, one chart that can be read as time or as
+     finished tasks (or as a table), where the time went, a ranking of tasks, the recent weeks, then
+     the longer view and the detailed records. Every sentence is put together from recorded facts. */
+  let reviewPeriod = 'week'; // 'week' (moved by reviewOffset), 'month' (the last 30 days) or 'quarter' (the last 12 weeks)
+  let reviewMetric = 'time'; // the chart shows recorded time or finished tasks
+  let reviewTable = false;
+  const hourLabel = (hour) => String(hour).padStart(2, '0') + ':00–' + String((hour + 1) % 24).padStart(2, '0') + ':00';
+  function recapWords(r, word) {
+    if (!r.total) return { title: word + '还没有留下记录', text: (r.done ? word + '勾选完成了 ' + r.done + ' 件事，但没有时间记录。' : '') + '用计时完成一段会自动记下；没开计时做的事可以补记。有了记录，这里会写出时间花在了哪里。' };
+    const [a, b] = r.areas;
+    const share = (x) => x.minutes / r.total;
+    const title = a.id === null && (!b || share(a) >= 0.5) ? word + '花时间最多的是「' + r.tasks[0].title.slice(0, 16) + '」'
+      : !b || share(a) >= 0.6 ? word + '的重心在「' + a.name + '」'
+        : word + '主要在「' + a.name + '」和「' + b.name + '」之间';
+    const diff = r.total - r.previous;
+    const parts = [
+      '一共记录了 ' + minutesLabel(r.total) + '，分在 ' + r.activeDays + ' 天、' + r.sessions + ' 段里' + (r.done ? '，完成了 ' + r.done + ' 件事' : '') + '。',
+      r.previous ? '比之前同样长的一段' + (diff >= 0 ? '多 ' : '少 ') + minutesLabel(Math.abs(diff)) + '。' : '之前同样长的一段没有记录。',
+      r.areas.length > 1 ? r.areas.slice(0, 3).map((x) => '「' + x.name + '」' + Math.round(share(x) * 100) + '%').join('、') + '。' : '',
+      '用时最多的是「' + r.tasks[0].title + '」（' + minutesLabel(r.tasks[0].minutes) + '）' + (r.tasks[1] ? '，其次是「' + r.tasks[1].title + '」' : '') + '。',
+      r.bestWeekday !== null && r.length > 1 ? '记录最多的是周' + '一二三四五六日'[r.bestWeekday] + (r.peakHour ? '，一天里集中在 ' + hourLabel(r.peakHour.hour) : '') + '。' : '',
+    ];
+    return { title, text: parts.filter(Boolean).join('') };
+  }
+  /* What the records say about how the user works, one short card each. */
+  function profileCards() {
+    const p = C.buildProfile(state, today());
+    const prefs = state.settings.prefs;
+    const cards = [['clock', '你说的节奏', '一次专注 ' + prefs.segment + ' 分钟' + (prefs.dailyMinutes ? '，每天可安排 ' + minutesLabel(prefs.dailyMinutes) : '') + (prefs.bestTime ? '，' + prefs.bestTime + '效率最高' : '') + '。']];
+    if (p.actualVsPlanned) cards.push(['target', '估计准不准', '实际用时是计划的 ' + Math.round(p.actualVsPlanned * 100) + '%' + (p.actualVsPlanned > 1.15 ? '，你通常比计划慢，助手会把时间留多一些。' : p.actualVsPlanned < 0.85 ? '，你通常比计划快。' : '，估计比较准。')]);
+    if (p.typicalFocusMinutes) cards.push(['brain', '一段专注多长', '记录里你真实的一段专注大约 ' + p.typicalFocusMinutes + ' 分钟' + (Math.abs(p.typicalFocusMinutes - prefs.segment) >= 10 ? '，和你说的 ' + prefs.segment + ' 分钟不太一样。' : '。')]);
+    if (p.focusMinutesByTimeOfDay) {
+      const [best, minutes] = Object.entries(p.focusMinutesByTimeOfDay).sort((a, b) => b[1] - a[1])[0];
+      cards.push(['bars', '什么时候专注得多', '记录里你在' + best + '专注得最多（' + minutesLabel(minutes) + '）。']);
+    }
+    if (p.last14Days) cards.push(['check', '最近 14 天', '安排了 ' + p.last14Days.planned + ' 项，完成 ' + p.last14Days.done + ' 项。']);
+    if (p.difficultyFeedback) cards.push(['note', '你的难度反馈', '太简单 ' + p.difficultyFeedback.easy + ' 次，正好 ' + p.difficultyFeedback.ok + ' 次，太难 ' + p.difficultyFeedback.hard + ' 次。']);
+    if (p.sessionsRecorded < 3) cards.push(['plus', '记录还不够', '计时记录只有 ' + p.sessionsRecorded + ' 段。用计时完成 3 段以上，助手就能开始按你的真实速度调整。']);
+    return cards;
+  }
   function renderReview() {
     const t = today();
     const old = $('.review-scroll');
     const scrollAt = old ? old.scrollTop : 0;
-    const start = C.addDays(C.weekStart(t), reviewOffset * 7);
-    const wk = reviewOffset ? '这一周' : '本周';
+    const thisMonday = C.weekStart(t);
+    const start = reviewPeriod === 'week' ? C.addDays(thisMonday, reviewOffset * 7) : reviewPeriod === 'month' ? C.addDays(t, -29) : C.addDays(thisMonday, -77);
+    const end = reviewPeriod === 'week' ? C.addDays(start, 6) : reviewPeriod === 'month' ? t : C.addDays(thisMonday, 6);
+    const isWeek = reviewPeriod === 'week';
+    const wk = !isWeek ? (reviewPeriod === 'month' ? '近 30 天' : '近 12 周') : reviewOffset ? '这一周' : '这周';
     const go = (n) => { reviewOffset = n; reviewDay = null; render(); };
+    const goWeek = (date) => { reviewPeriod = 'week'; reviewOffset = Math.round(C.daysBetween(thisMonday, C.weekStart(date)) / 7); reviewDay = date; render(); };
     const earliest = [...state.sessions.map((x) => x.date), ...state.tasks.map((x) => x.date || C.todayISO(new Date(x.createdAt || Date.now())))].sort()[0] || t;
+    const r = C.reviewSummary(state, start, end, { bucket: reviewPeriod === 'quarter' ? 'week' : 'day' });
+    const sessions = state.sessions.filter((x) => x.date >= start && x.date <= end);
+    const doneList = state.tasks.filter((x) => x.done && x.doneAt && C.todayISO(new Date(x.doneAt)) >= start && C.todayISO(new Date(x.doneAt)) <= end).sort((a, b) => b.doneAt - a.doneAt);
+    const planned = state.tasks.filter((x) => x.date && x.date >= start && x.date <= end);
+    const seg = (options, value, pick, label) => h('div', { class: 'segmented slim', role: 'tablist', 'aria-label': label }, options.map(([key, text]) =>
+      h('button', { role: 'tab', 'aria-selected': String(value === key), class: value === key ? 'on' : '', onclick: () => pick(key) }, text)));
+
+    // --- the recap in words
+    const words = recapWords(r, wk);
+    const hero = h('section', { class: 'rc-hero' },
+      h('h3', { class: 'rc-title' }, words.title), h('p', { class: 'rc-text' }, words.text),
+      modelName() && r.total ? h('div', { class: 'row' }, h('button', { class: 'pill soft', title: '把这一段的记录交给助手，让它写一段总结和建议', onclick: () => { ui.mode = 'planner'; ui.space = null; render(); send('请根据我 ' + plainDate(start) + ' 到 ' + plainDate(end) + ' 的时间记录和完成情况，写一段回顾：时间花在了哪里、和之前比有什么变化、下一步建议做什么。只根据记录说，不要猜。'); } }, icon('note'), '让助手写一段回顾')) : null);
+
+    // --- a few large figures
+    const big = (value, label, note) => h('div', { class: 'rc-fig' }, h('strong', {}, value), h('span', {}, label), note ? h('small', {}, note) : null);
+    const diff = r.total - r.previous;
+    const figures = h('div', { class: 'rc-figs' },
+      big(r.total ? minutesLabel(r.total) : '0 分钟', '已记录的时间', r.previous || r.total ? (diff >= 0 ? '比之前多 ' : '比之前少 ') + minutesLabel(Math.abs(diff)) : null),
+      big(r.bestWeekday === null ? '—' : '星期' + '一二三四五六日'[r.bestWeekday], '记录最多的一天', r.bestDay ? plainDate(r.bestDay.date) + ' · ' + minutesLabel(r.bestDay.minutes) : null),
+      big(r.peakHour ? hourLabel(r.peakHour.hour) : '—', '高峰时段', r.peakHour ? '这一小时里开始的记录共 ' + minutesLabel(r.peakHour.minutes) : r.total ? '补记没有填开始时间' : null),
+      big(r.done + (planned.length ? ' / ' + planned.length : ''), planned.length ? '完成 / 安排的事' : '完成的事', r.activeDays + ' 天有记录 · ' + r.sessions + ' 段'));
+
+    // --- one chart, two readings, or a table
+    const byTime = reviewMetric === 'time';
+    const value = (x) => (byTime ? x.minutes : x.done);
+    const rawTop = Math.max(byTime ? 60 : 4, ...r.series.map(value));
+    const tick = byTime ? ([15, 30, 60, 120, 180, 240, 300, 600, 900, 1200, 1800, 3000].find((n) => rawTop / n <= 4) || 6000) : Math.ceil(rawTop / 4);
+    const top = Math.ceil(rawTop / tick) * tick;
+    const ticks = Array.from({ length: top / tick + 1 }, (_, i) => i * tick).reverse();
+    const pct = (n) => ((n / top) * 100).toFixed(1) + '%';
+    const n = r.series.length;
+    const cols = 'grid-template-columns:repeat(' + n + ',minmax(0,1fr));gap:' + (n > 14 ? 3 : 6) + 'px';
+    const rangeLabel = (x) => (x.from === x.to ? plainDate(x.from) + ' 周' + '日一二三四五六'[new Date(x.from + 'T12:00:00').getDay()] : plainDate(x.from) + ' – ' + plainDate(x.to));
+    const tickLabel = (x, i) => (x.from !== x.to ? (i % 2 === (n - 1) % 2 ? Number(x.from.slice(5, 7)) + '/' + Number(x.from.slice(8)) : '')
+      : n <= 7 ? '周' + '日一二三四五六'[new Date(x.from + 'T12:00:00').getDay()] : (n - 1 - i) % 5 === 0 ? Number(x.from.slice(5, 7)) + '/' + Number(x.from.slice(8)) : '');
+    const peakValue = Math.max(...r.series.map(value));
+    const chart = h('div', { class: 'viz-bars' },
+      h('div', { class: 'viz-bars-axis', 'aria-hidden': 'true' }, ticks.map((v) => h('span', { style: 'bottom:' + pct(v) }, v ? (byTime ? shortTime(v) : String(v)) : '0'))),
+      h('div', { class: 'viz-bars-plot', style: cols, role: 'group', 'aria-label': wk + (byTime ? '已记录的时间' : '完成的任务数') },
+        ticks.map((v) => h('i', { class: 'viz-gridline' + (v ? '' : ' base'), style: 'bottom:' + pct(v), 'aria-hidden': 'true' })),
+        r.series.map((x) => {
+          const v = value(x), current = x.from <= t && t <= x.to;
+          const text = rangeLabel(x) + '：' + (byTime ? (v ? '已记录 ' + minutesLabel(v) : '没有记录') : '完成 ' + v + ' 件');
+          return h('button', { type: 'button', class: 'viz-week' + (current ? ' current' : '') + (v ? '' : ' empty'), title: text + (isWeek ? '' : '，点一下看这一周'), 'aria-label': text,
+            onclick: () => { if (isWeek) { reviewDay = x.from; render(); } else goWeek(x.from); } },
+          h('i', { style: 'height:' + (v ? pct(v) : '3px') }, v && (v === peakValue || current) ? h('span', { class: 'viz-week-value' }, byTime ? shortTime(v) : String(v)) : null));
+        })),
+      h('span', { class: 'viz-bars-corner' }),
+      h('div', { class: 'viz-bars-labels', style: cols, 'aria-hidden': 'true' }, r.series.map((x, i) => h('span', { class: x.from <= t && t <= x.to ? 'current' : '' }, tickLabel(x, i)))));
+    const table = h('div', { class: 'rc-table-wrap' }, h('table', { class: 'rc-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, reviewPeriod === 'quarter' ? '周' : '日期'), h('th', {}, '已记录'), h('th', {}, '完成'))),
+      h('tbody', {}, [...r.series].reverse().filter((x) => x.from <= t).map((x) => h('tr', { class: x.minutes || x.done ? '' : 'none' }, h('td', {}, rangeLabel(x)), h('td', {}, x.minutes ? minutesLabel(x.minutes) : '—'), h('td', {}, x.done ? x.done + ' 件' : '—'))))));
+    const chartCard = h('section', { class: 'card rc' },
+      h('div', { class: 'card-head' }, h('h3', {}, reviewPeriod === 'quarter' ? '每一周' : '每一天'),
+        h('div', { class: 'rc-tools' }, seg([['time', '时长'], ['done', '完成']], reviewMetric, (key) => { reviewMetric = key; render(); }, '看什么'),
+          seg([[false, '图'], [true, '表']], reviewTable, (key) => { reviewTable = key; render(); }, '怎么看'))),
+      reviewTable ? table : chart,
+      h('p', { class: 'sub' }, reviewTable ? '只统计计时和补记；完成按勾选的那一天算。' : (isWeek ? '点一根柱子，下面展开那一天。' : '点一根柱子看那一周。') + '只统计计时和补记，时间长短不代表学习效果。'));
+
+    // --- where the time went: one bar split by space, then a line for each
+    const areaColor = (a) => a.color || 'var(--t3)';
+    const share = (a) => (r.total ? (a.minutes / r.total) * 100 : 0);
+    const whereCard = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h3', {}, wk + '的时间花在了哪里'), r.total ? h('span', { class: 'sub' }, '共 ' + minutesLabel(r.total)) : null),
+      r.areas.length ? [
+        h('div', { class: 'rc-split', role: 'img', 'aria-label': r.areas.map((a) => a.name + ' ' + Math.round(share(a)) + '%').join('，') },
+          r.areas.map((a) => h('i', { style: 'flex-grow:' + a.minutes + ';background:' + areaColor(a), title: a.name + ' · ' + minutesLabel(a.minutes) + ' · ' + Math.round(share(a)) + '%' }))),
+        h('div', { class: 'rc-areas' }, r.areas.map((a) => h(a.id ? 'button' : 'div', { class: 'rc-area', title: a.id ? '打开「' + a.name + '」' : null, onclick: a.id ? () => { ui.mode = 'planner'; ui.space = a.id; render(); } : null },
+          h('i', { style: 'background:' + areaColor(a) }),
+          h('span', { class: 'rc-area-name' }, a.name), h('span', { class: 'rc-area-share' }, Math.round(share(a)) + '%'),
+          h('small', {}, minutesLabel(a.minutes) + ' · ' + a.tasks.join('、'))))),
+      ] : h('p', { class: 'empty' }, wk + '没有时间记录，所以还画不出分布。'));
+
+    // --- which tasks took the time
+    const rankCard = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h3', {}, '任务用时排行'), h('span', { class: 'sub' }, '占' + wk + '已记录时间的比例')),
+      r.tasks.length ? h('div', { class: 'rc-rank' }, h('div', { class: 'rc-rank-head' }, h('span', {}, '任务'), h('span', {}, '占比'), h('span', {}, '用时')),
+        r.tasks.map((x) => {
+          const task = x.taskId ? state.tasks.find((y) => y.id === x.taskId) : null;
+          const sp = space(x.spaceId);
+          return h(task ? 'button' : 'div', { class: 'rc-rank-row', title: task ? '打开这个任务' : '补记的时间，没有关联任务', onclick: task ? () => openTaskDialog(task) : null, style: '--share:' + share(x).toFixed(1) + '%' },
+            h('span', { class: 'rc-rank-title' }, sp ? h('i', { class: 'dot', style: 'background:' + sp.color }) : null, h('span', {}, x.title), h('small', {}, x.sessions + ' 段' + (task && task.done ? ' · 已完成' : ''))),
+            h('span', { class: 'rc-rank-share' }, share(x).toFixed(share(x) < 10 ? 1 : 0) + '%'), h('b', {}, minutesLabel(x.minutes)));
+        })) : h('p', { class: 'empty' }, wk + '还没有可以排行的时间记录。'));
+
+    // --- the recent weeks, each against what the user said they could put in
+    const weeks = Array.from({ length: 6 }, (_, i) => C.addDays(thisMonday, -i * 7)).map((monday) => ({ monday, sum: C.weekSummary(state, monday) }));
+    const weekTop = Math.max(60, ...weeks.map((w) => Math.max(w.sum.recorded, w.sum.capacity || 0)));
+    const weeksCard = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h3', {}, '最近几周'), h('span', { class: 'sub' }, '已记录 / 可投入')),
+      h('div', { class: 'rc-weeks' }, weeks.map((w, i) => {
+        const cap = w.sum.capacity, rec = w.sum.recorded;
+        const on = isWeek && reviewOffset === -i;
+        return h('button', { class: 'rc-week' + (on ? ' on' : ''), 'aria-current': on ? 'true' : null, title: '看这一周', onclick: () => goWeek(w.monday) },
+          h('span', { class: 'rc-week-name' }, plainDate(w.monday) + ' – ' + plainDate(C.addDays(w.monday, 6)), i === 0 ? h('small', {}, '本周') : null),
+          h('b', {}, cap ? Math.round((rec / cap) * 100) + '%' : minutesLabel(rec)),
+          h('span', { class: 'rc-week-track' }, cap ? h('i', { class: 'cap', style: 'width:' + ((cap / weekTop) * 100).toFixed(1) + '%' }) : null, h('i', { class: 'rec', style: 'width:' + ((rec / weekTop) * 100).toFixed(1) + '%' })),
+          h('small', { class: 'rc-week-note' }, minutesLabel(rec) + (cap ? ' / ' + minutesLabel(cap) : ' · 没有设可投入时间')));
+      })),
+      h('p', { class: 'sub' }, '百分比是已记录时间占那一周可投入时间的比例；可投入时间在「本周」页填写。'));
+
+    // --- the detailed records under the summary
     const days = Array.from({ length: 7 }, (_, i) => C.addDays(start, i));
-    const sessions = state.sessions.filter((x) => x.date >= start && x.date <= days[6]);
-    const perDay = days.map((d) => sessions.filter((x) => x.date === d).reduce((n, x) => n + x.actual, 0));
-    const max = Math.max(60, ...perDay);
-    const doneWeek = state.tasks.filter((x) => x.done && x.doneAt && days.includes(C.todayISO(new Date(x.doneAt))));
-    const planned = state.tasks.filter((x) => x.date && x.date >= start && x.date <= days[6]);
-    const stat = (value, label) => h('div', { class: 'stat' }, h('strong', {}, value), h('span', { class: 'sub' }, label));
-    const activeDays = perDay.filter((n) => n > 0).length;
+    const max = Math.max(60, ...days.map((d) => sessions.filter((x) => x.date === d).reduce((m, x) => m + x.actual, 0)));
+    const shownSessions = [...sessions].sort((a, b) => b.date.localeCompare(a.date) || (b.endedAt || 0) - (a.endedAt || 0));
     $('#main').replaceChildren(
-      h('header', { class: 'tt-header' }, h('div', {}, h('h2', {}, '回看'), h('p', { class: 'sub' }, '只显示已记录的事实：时间来自计时和补记，完成来自勾选。时间长短不代表学习效果。')),
+      h('header', { class: 'tt-header' }, h('div', {}, h('h2', {}, '回看'), h('p', { class: 'sub' }, plainDate(start) + ' – ' + plainDate(end) + (isWeek && !reviewOffset ? '（本周）' : '') + ' · 只显示已记录的事实，时间长短不代表学习效果。')),
         h('div', { class: 'tt-week-nav' },
-          h('button', { type: 'button', class: 'btn ghost', disabled: start <= earliest, onclick: () => go(reviewOffset - 1) }, '‹ 上一周'),
-          h('strong', {}, plainDate(days[0]) + ' – ' + plainDate(days[6]) + (reviewOffset ? '' : '（本周）')),
-          h('button', { type: 'button', class: 'btn ghost', disabled: reviewOffset >= 0, onclick: () => go(reviewOffset + 1) }, '下一周 ›'),
-          reviewOffset ? h('button', { type: 'button', class: 'btn ghost', onclick: () => go(0) }, '回到本周') : null)),
+          isWeek ? h('button', { type: 'button', class: 'btn ghost', disabled: start <= earliest, onclick: () => go(reviewOffset - 1) }, '‹ 上一周') : null,
+          isWeek ? h('button', { type: 'button', class: 'btn ghost', disabled: reviewOffset >= 0, onclick: () => go(reviewOffset + 1) }, '下一周 ›') : null,
+          seg([['week', isWeek && reviewOffset ? '这一周' : '本周'], ['month', '近 30 天'], ['quarter', '近 12 周']], reviewPeriod, (key) => { if (key === 'week' && isWeek) reviewOffset = 0; reviewPeriod = key; reviewDay = null; render(); }, '看多长一段'))),
       h('div', { class: 'review-scroll' },
-        h('div', { class: 'stats' },
-          stat(minutesLabel(perDay.reduce((a, b) => a + b, 0)), wk + '已记录的时间'),
-          stat(String(sessions.length), '时间记录条数'),
-          stat(activeDays + ' / 7', '有记录的天数'),
-          stat(planned.filter((x) => x.done).length + ' / ' + planned.length, wk + '安排的完成情况')),
-        trajectoryCard((date) => { reviewOffset = Math.round(C.daysBetween(C.weekStart(t), C.weekStart(date)) / 7); reviewDay = date; render(); }),
+        hero, figures, chartCard, whereCard,
+        h('div', { class: 'rc-pair' }, rankCard, weeksCard),
+        trajectoryCard(goWeek),
         h('div', { class: 'review-grid' },
           h('div', { class: 'review-col' },
-        h('section', { class: 'card' }, h('h3', {}, '这一周的每一天'), dayAccordion(days, sessions, max),
-          h('p', { class: 'sub' }, '点一天展开。竖条的高度是那天已记录的时间。')),
-        h('section', { class: 'card' },
-          h('div', { class: 'card-head' }, h('h3', {}, '时间记录'), h('button', { type: 'button', class: 'pill soft', onclick: () => openSessionDialog(null, { date: days.includes(t) ? t : days[0] }) }, icon('plus'), '补记一段')),
-          sessions.length ? h('div', { class: 'session-list' }, [...sessions].sort((a, b) => b.date.localeCompare(a.date) || (b.endedAt || 0) - (a.endedAt || 0)).map((x) => h('button', { type: 'button', class: 'session-row', title: '修改这条记录', onclick: () => openSessionDialog(x) },
-            h('span', { class: 'session-when' }, dateLabel(x.date).split(' ')[0] + (x.startTime ? ' ' + x.startTime : '')),
-            h('span', { class: 'session-what' }, x.step && x.step !== x.title ? x.title + ' · ' + x.step : x.title,
-              x.note || x.stuck ? h('small', {}, [x.note, x.stuck ? '卡在：' + x.stuck : ''].filter(Boolean).join('　')) : null),
-            h('span', { class: 'sub' }, [x.manual ? '补记' : x.edited ? '改过' : '', x.partial ? '没做完这一段' : ''].filter(Boolean).join(' · ')),
-            h('b', {}, minutesLabel(x.actual)))))
-            : h('p', { class: 'empty' }, '这一周还没有时间记录。用计时完成一段会自动记下；没开计时做的事可以补记。')),
-        h('section', { class: 'card' }, h('h3', {}, wk + '完成'),
-          doneWeek.length ? h('ul', { class: 'plain' }, doneWeek.map((x) => h('li', {}, x.title, h('span', { class: 'sub' }, ' · ' + minutesLabel(x.minutes))))) : h('p', { class: 'empty' }, wk + '没有完成的任务。'))),
+            isWeek ? h('section', { class: 'card' }, h('h3', {}, '这一周的每一天'), dayAccordion(days, sessions, max),
+              h('p', { class: 'sub' }, '点一天展开。竖条的高度是那天已记录的时间。')) : null,
+            h('section', { class: 'card' },
+              h('div', { class: 'card-head' }, h('h3', {}, '时间记录'), h('button', { type: 'button', class: 'pill soft', onclick: () => openSessionDialog(null, { date: t >= start && t <= end ? t : start }) }, icon('plus'), '补记一段')),
+              shownSessions.length ? h('div', { class: 'session-list' }, shownSessions.slice(0, 60).map((x) => h('button', { type: 'button', class: 'session-row', title: '修改这条记录', onclick: () => openSessionDialog(x) },
+                h('span', { class: 'session-when' }, dateLabel(x.date).split(' ')[0] + (x.startTime ? ' ' + x.startTime : '')),
+                h('span', { class: 'session-what' }, x.step && x.step !== x.title ? x.title + ' · ' + x.step : x.title,
+                  x.note || x.stuck ? h('small', {}, [x.note, x.stuck ? '卡在：' + x.stuck : ''].filter(Boolean).join('　')) : null),
+                h('span', { class: 'sub' }, [x.manual ? '补记' : x.edited ? '改过' : '', x.partial ? '没做完这一段' : ''].filter(Boolean).join(' · ')),
+                h('b', {}, minutesLabel(x.actual)))),
+              shownSessions.length > 60 ? h('p', { class: 'sub' }, '只列出最近的 60 条，共 ' + shownSessions.length + ' 条。') : null)
+                : h('p', { class: 'empty' }, wk + '还没有时间记录。用计时完成一段会自动记下；没开计时做的事可以补记。')),
+            h('section', { class: 'card' }, h('h3', {}, wk + '完成的事'),
+              doneList.length ? h('ul', { class: 'plain' }, doneList.slice(0, 40).map((x) => h('li', {}, x.title, h('span', { class: 'sub' }, ' · ' + minutesLabel(x.minutes))))) : h('p', { class: 'empty' }, wk + '没有完成的任务。'))),
           h('div', { class: 'review-col' },
-        h('section', { class: 'card' },
-          h('div', { class: 'card-head' }, h('h3', {}, '反思'), h('button', { class: 'pill soft', onclick: () => openReflectionDialog(null) }, icon('plus'), '写一条')),
-          state.reflections.length ? h('div', { class: 'reflections' }, [...state.reflections].reverse().slice(0, 30).map((r) => h('article', { class: 'reflection' },
-            h('header', {}, h('strong', {}, dateLabel(r.date)), h('span', { class: 'sub' }, r.source === 'user' ? '自己写的' : '助手记录的'),
-              h('span', { class: 'grow' }),
-              h('button', { class: 'icon-btn small', 'aria-label': '修改这条反思', title: '修改', onclick: () => openReflectionDialog(r) }, icon('gear'))),
-            h('p', { class: 'reflection-text' }, r.text))))
-            : h('p', { class: 'empty' }, '还没有反思。可以把写在本子上的反思拍照拖进聊天框，助手会读出文字并记录在这里。')),
-        h('section', { class: 'card' }, h('h3', {}, '助手对你的了解'),
-          h('ul', { class: 'plain' }, profileLines().map((line) => h('li', {}, line))),
-          h('div', { class: 'row' }, h('button', { class: 'pill soft', onclick: () => openSettings('memory') }, icon('note'), '查看和修改长期记忆（' + state.memory.length + ' 条）'))),
-            state.habits.length ? h('section', { class: 'card' }, h('h3', {}, '习惯'),
-          state.habits.length ? h('div', { class: 'habit-grid' }, state.habits.map((habit) => h('div', { class: 'habit-line' },
-            h('span', { class: 'task-title' }, habit.title),
-            h('span', { class: 'cells' }, days.map((d) => h('span', { class: 'cell' + (habit.log[d] ? ' on' : ''), title: dateLabel(d) }))),
-            h('span', { class: 'sub' }, C.habitWeekCount(habit, days[0]) + ' / ' + habit.perWeek)))) : h('p', { class: 'empty' }, '还没有习惯。')) : null))));
+            h('section', { class: 'card' },
+              h('div', { class: 'card-head' }, h('h3', {}, '反思'), h('button', { class: 'pill soft', onclick: () => openReflectionDialog(null) }, icon('plus'), '写一条')),
+              state.reflections.length ? h('div', { class: 'reflections' }, [...state.reflections].reverse().slice(0, 30).map((x) => h('article', { class: 'reflection' },
+                h('header', {}, h('strong', {}, dateLabel(x.date)), h('span', { class: 'sub' }, x.source === 'user' ? '自己写的' : '助手记录的'),
+                  h('span', { class: 'grow' }),
+                  h('button', { class: 'icon-btn small', 'aria-label': '修改这条反思', title: '修改', onclick: () => openReflectionDialog(x) }, icon('gear'))),
+                h('p', { class: 'reflection-text' }, x.text))))
+                : h('p', { class: 'empty' }, '还没有反思。可以把写在本子上的反思拍照拖进聊天框，助手会读出文字并记录在这里。')),
+            h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h3', {}, '从记录里看到的'), h('span', { class: 'sub' }, '助手安排时参考这些')),
+              h('div', { class: 'rc-notes' }, profileCards().map(([glyph, title, text]) => h('div', { class: 'rc-note' }, h('span', { class: 'rc-note-icon' }, icon(glyph)), h('div', {}, h('strong', {}, title), h('p', {}, text))))),
+              h('div', { class: 'row' }, h('button', { class: 'pill soft', onclick: () => openSettings('memory') }, icon('note'), '查看和修改长期记忆（' + state.memory.length + ' 条）'))),
+            state.habits.length && isWeek ? h('section', { class: 'card' }, h('h3', {}, '习惯'),
+              h('div', { class: 'habit-grid' }, state.habits.map((habit) => h('div', { class: 'habit-line' },
+                h('span', { class: 'task-title' }, habit.title),
+                h('span', { class: 'cells' }, days.map((d) => h('span', { class: 'cell' + (habit.log[d] ? ' on' : ''), title: dateLabel(d) }))),
+                h('span', { class: 'sub' }, C.habitWeekCount(habit, days[0]) + ' / ' + habit.perWeek))))) : null))));
     $('.review-scroll').scrollTop = scrollAt;
+  }
+
+  /* ---------- repeating tasks: one rule, edited in one place ---------- */
+  function stopRepeatFlow(rule) {
+    if (!confirm('停止「' + rule.title + '」的重复？\n从今天起还没开始的那几次会删掉；已经做过或开始做的会保留成普通任务。')) return;
+    if (undoable('已停止重复', () => commit(C.stopRepeat(state, rule.id, today())))) closeDialog();
+  }
+  function openRepeatDialog(rule) {
+    const ruleBox = h('input', { name: 'rule', maxLength: 60, value: C.repeatLabel(rule.rule), placeholder: '例如 每周一三五、每天、每隔一天、每月1号、到12月31日', oninput: () => readRule() });
+    const ruleHint = h('p', { class: 'sub repeat-hint' });
+    let parsed = rule.rule;
+    const readRule = () => {
+      const r = C.takeRepeat(ruleBox.value, today());
+      if (!r || r.error) { parsed = null; return ruleHint.replaceChildren(h('span', { class: 'cp-error' }, r ? r.error : '没有读到重复方式，例如「每周四」「每天」「每隔一天」「每月1号」')); }
+      parsed = C.cleanRule({ ...r.ruleRaw, start: r.startGiven ? r.ruleRaw.start : rule.rule.start }, today());
+      if (!parsed) return ruleHint.replaceChildren(h('span', { class: 'cp-error' }, '重复规则不完整'));
+      const next = C.nextOccurrences(parsed, today(), 3);
+      ruleHint.replaceChildren(h('b', {}, C.repeatLabel(parsed)), next.length ? ' · 接下来：' + next.map(dateLabel).join('、') : ' · 结束日期之前一次也没有');
+    };
+    readRule();
+    const form = openDialog('修改重复任务', [
+      field('要做什么', h('input', { name: 'title', maxLength: 150, required: true, value: rule.title })),
+      h('label', { class: 'field' }, h('span', {}, '怎么重复（直接写，例如「每周二四」「工作日」「每两周周四」，可以加「到12月31日」）'), ruleBox, ruleHint),
+      h('div', { class: 'row' },
+        field('开始时间（可以留空）', h('input', { name: 'time', type: 'time', value: rule.time || '' })),
+        field('预计分钟', h('input', { name: 'minutes', type: 'number', min: 1, max: 1440, value: rule.minutes }))),
+      field('分区', spaceSelect(rule.spaceId)),
+      field('标签（用空格分开）', h('input', { name: 'tags', maxLength: 90, value: rule.tags.join(' ') })),
+      h('p', { class: 'sub' }, '保存后，从今天起还没开始的那几次会按新的设置重新排；已经做过或开始做的不变。'),
+    ], [
+      h('button', { type: 'button', class: 'btn danger', onclick: () => stopRepeatFlow(rule) }, '停止重复'),
+      h('span', { class: 'grow' }), cancelButton(),
+      h('button', { class: 'btn dark', onclick: () => {
+        if (!parsed) return toast('请先写清楚怎么重复');
+        const minutes = Math.round(Number(form.minutes.value));
+        if (!(minutes >= 1 && minutes <= 1440)) return toast('预计分钟请填 1–1440');
+        try {
+          const next = C.updateRepeat(state, rule.id, { title: form.title.value, minutes, time: form.time.value, spaceId: form.space.value || null, tags: C.cleanTags(form.tags.value), rule: parsed }, today());
+          if (undoable('重复任务已更新', () => commit(next))) closeDialog();
+        } catch (error) { toast(error.message); }
+      } }, '保存'),
+    ]);
+  }
+  function openRepeatList() {
+    const rows = state.repeats.map((r) => {
+      const next = C.nextOccurrences(r.rule, today(), 1)[0];
+      const sp = space(r.spaceId);
+      return h('div', { class: 'repeat-row' },
+        h('span', { class: 'repeat-icon' }, icon('repeat')),
+        h('div', { class: 'repeat-text' }, h('strong', {}, r.title),
+          h('small', {}, C.repeatLabel(r.rule) + (r.time ? ' ' + r.time : '') + ' · ' + minutesLabel(r.minutes) + (sp ? ' · ' + sp.name : '') + ' · ' + (next ? '下一次：' + dateLabel(next) : '已经结束')),
+          r.tags.length ? h('span', { class: 'task-tags' }, tagList(r.tags)) : null),
+        h('button', { type: 'button', class: 'btn outline slim', onclick: () => openRepeatDialog(r) }, '修改'));
+    });
+    openDialog('重复任务', [
+      rows.length ? h('div', { class: 'repeat-list' }, rows) : h('p', { class: 'empty' }, '还没有重复任务。在快速添加（按 N）里写「每周四 交实验报告」或「每天晚上8点 背单词 20分钟」就能建一个。'),
+      h('p', { class: 'sub' }, '每个重复任务会提前排好接下来 7 天的那几次，之后每天自动补上。某一次没开始做，等下一次到来时它会自动清掉，不会越积越多；开始做过的会一直留着。'),
+    ], [h('span', { class: 'grow' }), h('button', { type: 'button', class: 'btn dark', onclick: closeDialog }, '好')]);
   }
 
   /* ---------- dialogs ---------- */
@@ -1856,7 +2104,13 @@
         h('div', { class: 'steps-foot' },
           h('button', { type: 'button', class: 'pill soft', onclick: () => editStep({ kind: 'add' }) }, icon('plus'), steps.length ? '加一段' : '拆成几段来计时'),
           steps.length ? h('span', { class: 'sub' }, '分段的修改立即保存') : null));
+    const rule = task && task.repeatId ? state.repeats.find((r) => r.id === task.repeatId) : null;
     const form = openDialog(task ? '编辑任务' : '新建任务', [
+      rule ? h('div', { class: 'repeat-note' }, icon('repeat'),
+        h('span', {}, '重复任务（' + C.repeatLabel(rule.rule) + '）。这里改的只是 ' + plainDate(task.repeatDate) + ' 这一次。'),
+        h('span', { class: 'grow' }),
+        h('button', { type: 'button', class: 'text-btn', onclick: () => openRepeatDialog(rule) }, '改重复规则'),
+        h('button', { type: 'button', class: 'text-btn', onclick: () => stopRepeatFlow(rule) }, '停止重复')) : null,
       field('要做什么', h('input', { name: 'title', maxLength: 150, required: true, value: v.title })),
       h('div', { class: 'row' },
         field('日期（可以留空）', h('input', { name: 'date', type: 'date', value: v.date })),
@@ -2214,15 +2468,17 @@
         }
       })),
       addTask: (title) => { const sp = spaceForCourse(title); openTaskDialog(null, { title: '', date: today(), time: '', minutes: 30, space: sp ? sp.id : '' }); },
-      addDate: (title) => { const sp = spaceForCourse(title); openDateDialog(null, { title: title + ' 考试', spaceId: sp ? sp.id : null }); },
+      addDate: (title) => openComposer('date', title + '考试 '),
       openSpace: (id) => { ui.mode = 'planner'; ui.space = id; render(); },
     } });
-  /* ---------- quick add: one chat-style box for both courses and tasks ----------
+  /* ---------- quick add: one chat-style box for courses, tasks, dates and money ----------
      A line is typed from a template, read on the spot, and shown back as a card before anything
-     is saved. Several lines at once become several cards. Nothing is written until "添加". */
+     is saved. Several lines at once become several cards. Nothing is written until "添加".
+     N (or Ctrl+K) opens it from any page; Alt+1–4 switches what it adds. */
+  const COMPOSER_MODES = [['course', '课程'], ['task', '任务'], ['date', '考试'], ['money', '记账']];
   const COMPOSER = {
     course: {
-      title: '添加课程', placeholder: '例如：自动控制原理 周四 1-2节 1-16周 @二东402 王老师',
+      title: '添加课程', noun: '门课', placeholder: '例如：自动控制原理 周四 1-2节 1-16周 @二东402 王老师',
       intro: '一行一门课，按下面的顺序写就行，顺序也可以打乱：\n课程名 · 星期 · 节次或钟点 · 周次 · @教室 · 某某老师\n周次不写就按整个学期；只上一次的课写具体日期。一次可以粘贴多行。',
       templates: [
         ['按节次', '自动控制原理 周四 1-2节 1-16周 @二东402 王老师'],
@@ -2232,35 +2488,85 @@
       ],
     },
     task: {
-      title: '安排任务', placeholder: '例如：明天下午3点 复习单片机 40分钟 @学习 #考试',
-      intro: '一行一件事，像发消息一样写：\n什么时候 · 做什么 · 多久 · @分区 · #标签\n时间和时长可以不写；标签可以写好几个，之后在任务列表里按标签筛选。',
+      title: '安排任务', noun: '项', placeholder: '例如：明天下午3点 复习单片机 40分钟 @学习 #考试',
+      intro: '一行一件事，像发消息一样写：\n什么时候 · 做什么 · 多久 · @分区 · #标签\n开头写「每天」「每周四」「每周一三五」「每隔一天」「每月1号」就是重复任务，会自动排进接下来 7 天。时间和时长可以不写。',
       templates: [
         ['定时间', '明天下午3点 复习单片机 40分钟 #考试'],
         ['今天做', '今天 整理实验报告 30分钟 #作业'],
-        ['下周', '下周一 9:00 小组讨论 1小时 #项目'],
+        ['每周重复', '每周四 交实验报告 30分钟 #作业'],
+        ['每天重复', '每天晚上8点 背单词 20分钟 #英语'],
         ['不定日期', '买洗衣液 #生活'],
       ],
     },
+    date: {
+      title: '考试 / 截止', noun: '个日期', placeholder: '例如：操作系统期末考试 12月20日 9:00 @二东402',
+      intro: '一行一个日期：是什么 · 哪天 · 几点（可以不写）· @地点（可以不写）\n名字里带上课程或分区的名字，会自动归到那个分区。倒计时显示在工作台和任务栏顶部。',
+      templates: [
+        ['考试', '操作系统期末考试 12月20日 9:00 @二东402'],
+        ['作业截止', '实验报告截止 下周五 23:59'],
+        ['报名', '六级报名截止 11月28日'],
+      ],
+    },
+    money: {
+      title: '记账', noun: '笔', placeholder: '例如：奶茶 15',
+      intro: '一行一笔，写上金额就行：\n默认是支出；写「收到」「生活费」或开头写「+」是收入；写「忍住没买」放进存钱罐。\n可以带日期，例如「昨天 午饭 23」。类别是自动猜的（虚线框），记错了可以在收支页修改。',
+      templates: [
+        ['支出', '奶茶 15'],
+        ['补记昨天', '昨天 打车 32'],
+        ['收入', '收到生活费 1500'],
+        ['忍住了', '忍住没买奶茶 15'],
+      ],
+    },
   };
-  const composer = { mode: 'task', logs: { course: [], task: [] }, el: null };
+  const composer = { mode: 'task', logs: { course: [], task: [], date: [], money: [] }, el: null };
+  const pageMode = () => (ui.mode === 'timetable' ? 'course' : ui.mode === 'money' ? 'money' : 'task');
+  function focusComposer() {
+    const box = composer.el && composer.el.querySelector('.composer-input');
+    if (!box) return;
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  }
+  function switchComposer(mode) {
+    composer.mode = mode;
+    drawComposer(); // what was typed stays: it was probably meant for the kind just picked
+    focusComposer();
+  }
   function openComposer(mode, prefill = '') {
-    if (mode) composer.mode = mode;
+    composer.mode = mode || pageMode();
     if (!composer.el) {
       composer.el = h('dialog', { class: 'composer', 'aria-label': '快速添加' });
       composer.el.addEventListener('click', (e) => { if (e.target === composer.el) composer.el.close(); });
+      composer.el.addEventListener('keydown', (e) => {
+        if (!e.altKey || e.ctrlKey || e.metaKey || !/^Digit[1-4]$/.test(e.code)) return;
+        e.preventDefault();
+        switchComposer(COMPOSER_MODES[Number(e.code.slice(5)) - 1][0]);
+      });
       document.body.append(composer.el);
     }
     drawComposer(prefill);
     if (!composer.el.open) composer.el.showModal();
-    const box = composer.el.querySelector('.composer-input');
-    box.focus();
-    box.setSelectionRange(box.value.length, box.value.length);
+    focusComposer();
   }
+  // N anywhere outside a text box, or Ctrl+K (⌘K) even inside one, opens the box for the current page.
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || e.isComposing || e.repeat) return;
+    if ([...document.querySelectorAll('dialog[open]')].some((d) => d !== composer.el)) return;
+    const editing = e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]');
+    const hot = ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k')
+      || (!editing && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'n');
+    if (!hot) return;
+    e.preventDefault();
+    if (composer.el && composer.el.open) focusComposer(); else openComposer(pageMode());
+  });
+
   const fieldPill = (label, value, cls) => h('span', { class: 'cp-pill' + (cls ? ' ' + cls : '') }, h('small', {}, label), value);
   /* Reads the lines of one message into cards. Courses are checked against the timetable as it is now. */
   function readComposer(mode, text) {
     const lines = text.split(/\n+/).map((x) => x.trim()).filter(Boolean).slice(0, 30);
-    if (mode === 'task') return lines.map((line) => ({ line, ...C.parseTaskLine(state, line, today(), ui.space) }));
+    const t = today();
+    if (mode === 'task') return lines.map((line) => { const r = C.parseTaskLine(state, line, t, ui.space); return { line, ...r, ok: !r.error }; });
+    if (mode === 'date') return lines.map((line) => { const r = C.parseDateLine(state, line, t, ui.space); return { line, ...r, ok: !r.error }; });
+    if (mode === 'money') return lines.map((line) => { const r = C.parseMoneyLine(line, t); return { line, ...r, ok: !r.error }; });
     const sched = T.normalize(state.schedule);
     const rows = lines.map((line) => T.fromLine(line, sched.settings));
     const p = T.preview(sched, rows);
@@ -2268,7 +2574,7 @@
       const r = p.records[i];
       const mine = T.expand(row, sched.settings);
       const clashes = r.errors.length ? [] : p.conflicts.filter((c) => mine.some((e) => T.key(e) === T.key(c.a)));
-      return { line: lines[i], row, errors: r.errors, value: r.value, count: r.occurrences, clashes };
+      return { line: lines[i], row, errors: r.errors, ok: !r.errors.length, value: r.value, count: r.occurrences, clashes };
     });
   }
   function courseCardView(item) {
@@ -2285,46 +2591,105 @@
         : h('p', { class: 'cp-ok' }, '会排进 ' + item.count + ' 次课' + (item.clashes.length ? ' · 与已有安排有 ' + item.clashes.length + ' 处时间重叠' : '')),
     ];
   }
+  const minutesPill = (minutes, given) => fieldPill('时长', minutesLabel(minutes) + (given ? '' : '（默认）'), given ? '' : 'guess');
   function taskCardView(item) {
-    if (item.error) return [h('strong', { class: 'cp-title' }, item.line), h('p', { class: 'cp-error' }, item.error)];
+    if (item.repeat) {
+      const r = item.repeat, sp = space(r.spaceId);
+      const next = C.nextOccurrences(r.rule, today(), 3);
+      const now = C.nextOccurrences(r.rule, today(), 8).filter((d) => d <= C.addDays(today(), C.REPEAT_AHEAD)).length;
+      return [
+        h('strong', { class: 'cp-title' }, icon('repeat'), r.title),
+        h('div', { class: 'cp-pills' },
+          fieldPill('重复', C.repeatLabel(r.rule), 'key'),
+          r.rule.start > today() ? fieldPill('开始', dateLabel(r.rule.start)) : null,
+          r.time ? fieldPill('时间', r.time) : null,
+          minutesPill(r.minutes, item.minutesGiven),
+          sp ? fieldPill('分区', sp.name) : null, tagList(r.tags)),
+        next.length ? h('p', { class: 'cp-ok' }, '接下来：' + next.map(dateLabel).join('、') + (now ? ' · 先排好 7 天内的 ' + now + ' 次，之后每天自动补上' : ' · 7 天内没有，到时候会自动排上'))
+          : h('p', { class: 'cp-error' }, '结束日期之前一次也没有'),
+        item.unknownSpace ? h('p', { class: 'cp-error' }, '没有叫「' + item.unknownSpace + '」的分区，先放在' + (sp ? '「' + sp.name + '」' : '不分区') + '。') : null,
+      ];
+    }
     const t = item.task, sp = space(t.spaceId);
     return [
       h('strong', { class: 'cp-title' }, t.title),
       h('div', { class: 'cp-pills' },
         fieldPill('日期', t.date ? dateLabel(t.date) : '未定日期', t.date ? '' : 'guess'),
         t.time ? fieldPill('开始', t.time) : null,
-        fieldPill('时长', minutesLabel(t.minutes) + (item.minutesGiven ? '' : '（默认）'), item.minutesGiven ? '' : 'guess'),
-        sp ? fieldPill('分区', sp.name) : null,
-        ...t.tags.map((tag) => h('span', { class: 'utag', style: '--tag:' + tagColor(tag) }, '#' + tag))),
+        minutesPill(t.minutes, item.minutesGiven),
+        sp ? fieldPill('分区', sp.name) : null, tagList(t.tags)),
       item.unknownSpace ? h('p', { class: 'cp-error' }, '没有叫「' + item.unknownSpace + '」的分区，先放在' + (sp ? '「' + sp.name + '」' : '不分区') + '。') : null,
     ];
   }
+  function dateCardView(item) {
+    const d = item.item, sp = space(d.spaceId);
+    return [
+      h('strong', { class: 'cp-title' }, d.title),
+      h('div', { class: 'cp-pills' },
+        fieldPill('日期', dateLabel(d.date)), d.time ? fieldPill('时间', d.time) : null, d.place ? fieldPill('地点', d.place) : null,
+        sp ? fieldPill('分区', sp.name + (item.spaceFromTitle ? '（按名字猜的）' : ''), item.spaceFromTitle ? 'guess' : '') : null),
+      h('p', { class: 'cp-ok' }, item.daysLeft === 0 ? '就是今天' : '还有 ' + item.daysLeft + ' 天'),
+    ];
+  }
+  const MONEY_KIND = { in: '收入', out: '支出', saved: '忍住没花' };
+  function moneyCardView(item) {
+    const e = item.entry;
+    return [
+      h('strong', { class: 'cp-title' }, e.note || e.category),
+      h('div', { class: 'cp-pills' },
+        fieldPill('类型', MONEY_KIND[e.kind], 'kind-' + e.kind),
+        fieldPill('金额', h('span', { class: 'amt ' + (e.kind === 'saved' ? 'piggy' : e.kind) }, (e.kind === 'in' ? '+' : e.kind === 'out' ? '−' : '') + money(e.amount))),
+        fieldPill('类别', e.category, 'guess'),
+        fieldPill('日期', dateLabel(e.date))),
+    ];
+  }
+  function cardView(mode, item) {
+    if (mode === 'course') return courseCardView(item);
+    if (!item.ok) return [h('strong', { class: 'cp-title' }, item.title || item.line), h('p', { class: 'cp-error' }, item.error)];
+    return mode === 'task' ? taskCardView(item) : mode === 'date' ? dateCardView(item) : moneyCardView(item);
+  }
   function addFromComposer(msg) {
     const mode = msg.mode;
-    if (mode === 'task') {
-      const tasks = msg.items.filter((x) => x.task).map((x) => x.task);
-      if (!tasks.length) return toast('没有能添加的任务');
-      const ok = undoable('已添加 ' + tasks.length + ' 件事', () => change((s) => {
-        for (const t of tasks) s.tasks.push({ id: C.uid('t'), title: t.title, date: t.date, minutes: t.minutes, spaceId: t.spaceId, done: false, doneAt: null, createdAt: Date.now(), origin: 'user', ...(t.time ? { time: t.time } : {}), ...(t.tags.length ? { tags: t.tags } : {}) });
-      }));
-      if (ok) { msg.done = tasks.length + ' 件事已加入任务列表'; drawComposer(); }
+    if (mode === 'course') {
+      const items = readComposer('course', msg.items.map((x) => x.line).join('\n')); // the timetable may have changed since the card was shown
+      const rows = items.filter((x) => x.ok).map((x) => x.row);
+      if (!rows.length) return toast('没有能添加的课程');
+      try {
+        const next = C.clone(state);
+        next.schedule = T.applyImport(state.schedule, rows, '快速添加');
+        const count = T.preview(state.schedule, rows).added.length;
+        if (undoable('已排进 ' + count + ' 次课', () => commit(next))) { msg.done = rows.length + ' 门课已加入课表，共 ' + count + ' 次课'; drawComposer(); }
+      } catch (error) { toast(error.message); }
       return;
     }
-    const items = readComposer('course', msg.items.map((x) => x.line).join('\n')); // the timetable may have changed since the card was shown
-    const rows = items.filter((x) => !x.errors.length).map((x) => x.row);
-    if (!rows.length) return toast('没有能添加的课程');
+    const ok = msg.items.filter((x) => x.ok);
+    if (!ok.length) return toast('没有能添加的内容');
+    let next = C.clone(state), label, done;
     try {
-      const next = C.clone(state);
-      next.schedule = T.applyImport(state.schedule, rows, '快速添加');
-      const count = T.preview(state.schedule, rows).added.length;
-      if (undoable('已排进 ' + count + ' 次课', () => commit(next))) { msg.done = rows.length + ' 门课已加入课表，共 ' + count + ' 次课'; drawComposer(); }
-    } catch (error) { toast(error.message); }
+      if (mode === 'task') {
+        const tasks = ok.filter((x) => x.task).map((x) => x.task);
+        const rules = ok.filter((x) => x.repeat).map((x) => x.repeat);
+        for (const t of tasks) next.tasks.push({ id: C.uid('t'), title: t.title, date: t.date, minutes: t.minutes, spaceId: t.spaceId, done: false, doneAt: null, createdAt: Date.now(), origin: 'user', ...(t.time ? { time: t.time } : {}), ...(t.tags.length ? { tags: t.tags } : {}) });
+        for (const r of rules) next = C.addRepeat(next, r, today(), Date.now());
+        const parts = [tasks.length ? tasks.length + ' 件事' : '', rules.length ? rules.length + ' 个重复任务' : ''].filter(Boolean).join('和 ');
+        label = '已添加 ' + parts;
+        done = parts + '已加入任务列表' + (rules.length ? '；重复任务已排进接下来 7 天' : '');
+      } else if (mode === 'date') {
+        for (const x of ok) next.dates.push({ id: C.uid('d'), createdAt: Date.now(), ...x.item });
+        label = '已记下 ' + ok.length + ' 个日期';
+        done = ok.length + ' 个日期已加入倒计时';
+      } else {
+        for (const x of ok) next = C.addMoney(next, x.entry, Date.now());
+        label = '已记 ' + ok.length + ' 笔';
+        done = ok.length + ' 笔已记入收支';
+      }
+    } catch (error) { return toast(error.message); }
+    if (undoable(label, () => commit(next))) { msg.done = done; drawComposer(); }
   }
   function sendComposer(text) {
     const mode = composer.mode;
     if (!text.trim()) return;
-    const items = readComposer(mode, text);
-    composer.logs[mode].push({ role: 'user', text }, { role: 'bot', mode, items, text });
+    composer.logs[mode].push({ role: 'user', text }, { role: 'bot', mode, items: readComposer(mode, text), text });
     drawComposer('');
   }
   function drawComposer(prefill) {
@@ -2341,27 +2706,34 @@
     const live = h('div', { class: 'composer-live', 'aria-live': 'polite' });
     const hint = () => {
       const line = input.value.split('\n').filter((x) => x.trim()).pop() || '';
-      if (!line.trim()) return live.replaceChildren(h('span', { class: 'sub' }, '回车发送 · Shift+回车换行 · 点上面的模板可以直接改'));
+      if (!line.trim()) return live.replaceChildren(h('span', { class: 'sub' }, '回车发送 · Shift+回车换行 · Alt+1–4 切换 · 在任何页面按 N 打开这里'));
       const item = readComposer(mode, line)[0];
-      const bad = mode === 'task' ? item.error : item.errors.length;
-      live.replaceChildren(...[h('span', { class: 'sub' }, '识别为：'), ...(mode === 'task' ? taskCardView(item).slice(1, 2) : courseCardView(item).slice(1, 2)),
-        bad ? h('span', { class: 'cp-error' }, mode === 'task' ? '还没读到要做的事' : item.errors[0]) : null].filter(Boolean));
+      const pills = cardView(mode, item).find((n) => n && n.classList && n.classList.contains('cp-pills'));
+      const error = item.ok ? null : mode === 'course' ? item.errors[0] : item.error;
+      live.replaceChildren(...[h('span', { class: 'sub' }, '识别为：'), pills, error ? h('span', { class: 'cp-error' }, error) : null].filter(Boolean));
     };
     const bubble = (msg, i) => {
       if (msg.role === 'user') return h('div', { class: 'cp-msg me' }, h('div', { class: 'cp-bubble' }, msg.text));
-      const good = msg.mode === 'task' ? msg.items.filter((x) => x.task).length : msg.items.filter((x) => !x.errors.length).length;
+      const good = msg.items.filter((x) => x.ok).length, noun = COMPOSER[msg.mode].noun;
       const clashes = msg.mode === 'course' && msg.items.some((x) => x.clashes && x.clashes.length);
+      const single = msg.mode === 'task' && msg.items.length === 1 && msg.items[0].task ? msg.items[0].task : null;
       return h('div', { class: 'cp-msg bot' }, h('div', { class: 'cp-bubble' },
-        h('p', {}, good === msg.items.length ? '读到了 ' + msg.items.length + (msg.mode === 'task' ? ' 件事' : ' 门课') + '，看一下对不对：' : '有 ' + (msg.items.length - good) + ' 行没读懂，标红的地方可以改了再发：'),
-        msg.items.map((item) => h('div', { class: 'cp-card' + ((msg.mode === 'task' ? item.error : item.errors.length) ? ' bad' : '') }, msg.mode === 'task' ? taskCardView(item) : courseCardView(item))),
+        h('p', {}, good === msg.items.length ? '读到了 ' + msg.items.length + ' ' + noun + '，看一下对不对：' : '有 ' + (msg.items.length - good) + ' 行没读懂，标红的地方可以改了再发：'),
+        msg.items.map((item) => h('div', { class: 'cp-card' + (item.ok ? '' : ' bad') }, cardView(msg.mode, item))),
         msg.done ? h('p', { class: 'cp-done' }, icon('check'), msg.done)
           : h('div', { class: 'cp-actions' },
-            good ? h('button', { class: 'btn dark slim', onclick: () => addFromComposer(msg) }, clashes ? '仍然添加' : good === msg.items.length ? '添加' : '添加能读懂的 ' + good + (msg.mode === 'task' ? ' 件' : ' 门')) : null,
-            h('button', { class: 'btn outline slim', onclick: () => { log.splice(i - 1, 2); drawComposer(msg.text); } }, '改一下'),
-            msg.mode === 'task' && msg.items.length === 1 && msg.items[0].task ? h('button', { class: 'btn ghost slim', title: '用完整的表单继续填写（分段、继续点等）', onclick: () => { const t = msg.items[0].task; composer.el.close(); openTaskDialog(null, { title: t.title, date: t.date || '', time: t.time || '', minutes: t.minutes, space: t.spaceId || '', next: '', tags: t.tags }); } }, '详细填写') : null)));
+            good ? h('button', { class: 'btn dark slim', onclick: () => addFromComposer(msg) }, clashes ? '仍然添加' : good === msg.items.length ? '添加' : '添加能读懂的 ' + good + ' ' + noun) : null,
+            h('button', { class: 'btn outline slim', onclick: () => { log.splice(i - 1, 2); drawComposer(msg.text); focusComposer(); } }, '改一下'),
+            single ? h('button', { class: 'btn ghost slim', title: '用完整的表单继续填写（分段、继续点等）', onclick: () => { composer.el.close(); openTaskDialog(null, { title: single.title, date: single.date || '', time: single.time || '', minutes: single.minutes, space: single.spaceId || '', next: '', tags: single.tags }); } }, '详细填写') : null)));
     };
-    const switcher = h('div', { class: 'segmented slim composer-switch', role: 'tablist' }, [['course', '课程'], ['task', '任务']].map(([key, label]) =>
-      h('button', { role: 'tab', 'aria-selected': String(mode === key), class: mode === key ? 'on' : '', onclick: () => { composer.mode = key; drawComposer(''); composer.el.querySelector('.composer-input').focus(); } }, label)));
+    const links = {
+      course: [['学期与节次', () => timetable.settings(() => drawComposer())], ['导入课表文件', () => { composer.el.close(); timetable.openImport(); }]],
+      task: [['重复任务' + (state.repeats.length ? '（' + state.repeats.length + '）' : ''), () => openRepeatList()], ['用表单', () => { composer.el.close(); openTaskDialog(null); }]],
+      date: [['用表单', () => { composer.el.close(); openDateDialog(null); }]],
+      money: [['用表单', () => { composer.el.close(); openMoneyDialog(null); }]],
+    }[mode];
+    const switcher = h('div', { class: 'segmented slim composer-switch', role: 'tablist', 'aria-label': '添加什么' }, COMPOSER_MODES.map(([key, label], n) =>
+      h('button', { role: 'tab', 'aria-selected': String(mode === key), class: mode === key ? 'on' : '', title: label + '（Alt+' + (n + 1) + '）', onclick: () => switchComposer(key) }, label)));
     const scroll = h('div', { class: 'composer-log' },
       h('div', { class: 'cp-msg bot' }, h('div', { class: 'cp-bubble intro' }, h('p', {}, conf.intro),
         needsTerm ? h('p', { class: 'cp-error' }, '还没有设置学期第 1 周和每节课的时间：按节次写的课需要它，按钟点写的课和具体日期的课不需要。', h('button', { class: 'text-btn', onclick: () => timetable.settings(() => drawComposer()) }, ' 去设置 ›')) : null)),
@@ -2369,7 +2741,7 @@
     composer.el.replaceChildren(
       h('header', { class: 'composer-head' }, h('h2', {}, conf.title), switcher, h('span', { class: 'grow' }),
         log.length ? h('button', { class: 'text-btn', onclick: () => { composer.logs[mode] = []; drawComposer(); } }, '清空') : null,
-        mode === 'course' ? h('button', { class: 'text-btn', onclick: () => { composer.el.close(); timetable.openImport(); } }, '导入课表文件') : h('button', { class: 'text-btn', onclick: () => { composer.el.close(); openTaskDialog(null); } }, '用表单'),
+        links.map(([label, run]) => h('button', { class: 'text-btn', onclick: run }, label)),
         h('button', { class: 'icon-btn', 'aria-label': '关闭', onclick: () => composer.el.close() }, icon('close'))),
       scroll,
       h('footer', { class: 'composer-foot' },
@@ -2379,6 +2751,36 @@
         live));
     requestAnimationFrame(() => { grow(); scroll.scrollTop = scroll.scrollHeight; });
     hint();
+  }
+
+  /* Late tasks are spread over the coming days instead of all landing on today. The plan is shown first. */
+  function openSpreadDialog() {
+    const t = today();
+    const late = state.tasks.filter((x) => !x.done && x.date && x.date < t);
+    const repeating = late.filter((x) => x.repeatId);
+    const ids = late.filter((x) => !x.repeatId).map((x) => x.id);
+    const daily = state.settings.prefs.dailyMinutes || null;
+    const now = new Date();
+    const free = C.freeSlots(state, t, { now: now.getHours() * 60 + now.getMinutes() }).free;
+    const plan = C.spreadTasks(state, ids, t, { daily: daily || 120, todayFree: free });
+    const rows = plan.moves.map((m) => h('li', { class: 'spread-row' + (m.over ? ' over' : '') },
+      h('span', { class: 'spread-title' }, m.title, h('small', {}, minutesLabel(m.minutes) + ' · 原定 ' + plainDate(m.from) + (m.deadlineIn !== null ? ' · 所在分区 ' + m.deadlineIn + ' 天后有考试或截止，先排' : ''))),
+      h('span', { class: 'spread-to' }, '→ ' + dateLabel(m.to)),
+      m.over ? h('small', { class: 'cp-error' }, m.deadlineIn !== null && m.deadlineIn < 14 ? '考试或截止之前哪天都放不下，先放在它之前最空的一天，会超出这天可安排的时间' : '哪天都放不下，放在了最空的一天，会超出这天可安排的时间') : null));
+    const days = plan.days.map((d) => h('span', { class: 'cp-pill' + (d.planned + d.added > d.daily ? ' over' : '') }, h('small', {}, dateLabel(d.date)), minutesLabel(d.planned + d.added) + ' / ' + minutesLabel(d.daily)));
+    openDialog('重新安排过期的任务', [
+      h('p', { class: 'sub' }, '每件事排到接下来两周里最早还有空的一天。每天按可安排 ' + minutesLabel(daily || 120) + ' 算' + (daily ? '' : '（还没设置，先按 2 小时，可以在设置里改）') + '，减去那天已经安排的；今天只算剩下的空闲时间（' + minutesLabel(free) + '）。所在分区快要考试或截止的先排。'),
+      ids.length ? h('ol', { class: 'spread-list' }, rows) : h('p', { class: 'empty' }, '没有需要重新安排的任务。'),
+      days.length ? h('div', { class: 'spread-days' }, h('small', {}, '排完以后这几天的计划时间 / 可安排时间'), h('div', { class: 'cp-pills' }, days)) : null,
+      repeating.length ? h('p', { class: 'sub' }, '另有 ' + repeating.length + ' 个过期的是重复任务，不参与重排：下一次到来时，没开始做的会自动清掉。') : null,
+      h('p', { class: 'sub' }, '移动后原来定的开始时间会去掉，免得和新一天的课冲突。'),
+    ], [
+      h('button', { type: 'button', class: 'btn ghost', disabled: !ids.length, title: '和以前一样，全部放到今天', onclick: () => {
+        if (undoable(ids.length + ' 项已改到今天', () => change((s) => { for (const x of s.tasks) if (ids.includes(x.id)) { x.date = t; delete x.time; } }))) closeDialog();
+      } }, '全部放到今天'),
+      h('span', { class: 'grow' }), cancelButton(),
+      h('button', { class: 'btn dark', disabled: !ids.length, onclick: () => { if (undoable(ids.length + ' 项已重新安排', () => commit(C.applySpread(state, plan.moves)))) closeDialog(); } }, '按这个安排'),
+    ]);
   }
 
   /* ---------- the workbench: one page that answers "what now, what today, how is the week going" ----------
@@ -2424,7 +2826,7 @@
           pick && pick.next ? h('span', { class: 'home-next' }, '从这里继续：' + pick.next) : null, lessonLine),
         h('div', { class: 'home-hero-actions' },
           pick ? h('button', { class: 'btn dark', onclick: () => beginTimer(pick.id) }, icon('play'), '开始计时') : h('button', { class: 'btn dark', onclick: () => ask('帮我规划今天') }, '让助手规划今天'),
-          overdue.length ? h('button', { class: 'btn outline slim', title: '把过期未完成的任务都改到今天', onclick: () => undoable(overdue.length + ' 项已改到今天', () => change((s) => { for (const x of s.tasks) if (!x.done && x.date && x.date < t) { x.date = t; delete x.time; } })) }, overdue.length + ' 项过期 → 改到今天') : null));
+          overdue.length ? h('button', { class: 'btn outline slim', title: '把过期没做完的任务分到接下来几天', onclick: openSpreadDialog }, icon('spread'), overdue.length + ' 项过期 → 重新安排') : null));
 
     // --- today
     const n = todayNumbers(all);
@@ -2459,7 +2861,7 @@
 
     // --- countdowns and cards
     const dates = C.upcomingDates(state, t).slice(0, 4);
-    const datesCard = card('倒计时', link('+ 考试 / 截止日期', () => openDateDialog(null)),
+    const datesCard = card('倒计时', link('+ 考试 / 截止日期', () => openComposer('date')),
       dates.length ? dates.map((d) => h('button', { class: 'next-row', onclick: () => { if (d.kind === 'goal') { ui.tabs.all = 'goals'; open('planner', null); } else openDateDialog(state.dates.find((x) => x.id === d.id)); } },
         h('b', { class: d.daysLeft <= 7 ? 'soon' : '' }, d.daysLeft === 0 ? '今天' : String(d.daysLeft), d.daysLeft === 0 ? null : h('small', {}, ' 天')),
         h('span', { class: 'next-text' }, d.title, h('small', {}, plainDate(d.date) + (d.time ? ' ' + d.time : '') + (d.place ? ' · ' + d.place : '') + (d.kind === 'goal' ? ' · 目标期限' : '') + (space(d.spaceId) ? ' · ' + space(d.spaceId).name : '')))))
@@ -2479,7 +2881,7 @@
         h('div', {}, h('strong', {}, money(ms.balance)), h('small', {}, '余额')),
         h('div', {}, h('strong', {}, h('span', { class: 'amt in' }, '+' + money(ms.today.in)), ' ', h('span', { class: 'amt out' }, '−' + money(ms.today.out))), h('small', {}, '今天流入 / 流出')),
         h('div', { class: ms.budget && ms.budget.over ? 'over' : '' }, h('strong', {}, ms.budget ? money(ms.budget.left) : money(ms.piggy.total)), h('small', {}, ms.budget ? (ms.budget.over ? '生活费已超支' : '生活费还剩 · 日均 ' + money(ms.budget.perDay)) : '存钱罐'))),
-      h('div', { class: 'row tight' }, h('button', { class: 'btn outline slim', onclick: () => openMoneyDialog(null) }, icon('plus'), '记一笔'), h('button', { class: 'btn ghost', onclick: () => openMoneyDialog(null, { kind: 'saved' }) }, '忍住了一次'),
+      h('div', { class: 'row tight' }, h('button', { class: 'btn outline slim', onclick: () => openComposer('money') }, icon('plus'), '记一笔'), h('button', { class: 'btn ghost', onclick: () => openComposer('money', '忍住没买 ') }, '忍住了一次'),
         ms.budget ? h('span', { class: 'sub' }, '存钱罐 ' + money(ms.piggy.total)) : null));
 
     // --- habits, only when there are any
@@ -2535,6 +2937,39 @@
           left !== null ? h('small', { class: left < 0 ? 'overdue' : left <= 7 ? 'soon' : '' }, left < 0 ? '已过期限 ' + -left + ' 天' : left === 0 ? '今天到期' : '还有 ' + left + ' 天 · ' + plainDate(g.deadline)) : null);
       })) : null;
 
+    // --- free time left today: the gaps between classes and timed tasks, with one-click placement
+    const nowMinute = now.getHours() * 60 + now.getMinutes();
+    const wholeDay = C.freeSlots(state, t);
+    const ahead = C.freeSlots(state, t, { now: nowMinute });
+    const toMinute = (s) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3));
+    const span = wholeDay.windowEnd - wholeDay.windowStart;
+    const at = (m) => ((Math.max(0, Math.min(span, m - wholeDay.windowStart)) / span) * 100).toFixed(2) + '%';
+    const wide = (a, b) => ((Math.max(0, Math.min(b, wholeDay.windowEnd) - Math.max(a, wholeDay.windowStart)) / span) * 100).toFixed(2) + '%';
+    const timeline = h('div', { class: 'free-line', role: 'img', 'aria-label': '今天 ' + wholeDay.from + '–' + wholeDay.to + '：' + wholeDay.busy.length + ' 段占用，空闲 ' + minutesLabel(wholeDay.free) },
+      wholeDay.slots.map((x) => h('i', { class: 'free-seg open', style: 'left:' + at(toMinute(x.start)) + ';width:' + wide(toMinute(x.start), toMinute(x.end)) })),
+      wholeDay.busy.map((b) => h('i', { class: 'free-seg ' + b.kind, title: (b.kind === 'class' ? '课：' : '任务：') + b.title, style: 'left:' + at(b.start) + ';width:' + wide(b.start, b.end) })),
+      nowMinute > wholeDay.windowStart ? h('i', { class: 'free-past', style: 'width:' + at(nowMinute) }) : null,
+      nowMinute > wholeDay.windowStart && nowMinute < wholeDay.windowEnd ? h('i', { class: 'free-now', style: 'left:' + at(nowMinute) }) : null);
+    const ticks = h('div', { class: 'free-ticks', 'aria-hidden': 'true' }, [8, 12, 16, 20].map((hour) => h('span', { style: 'left:' + at(hour * 60) }, hour + ':00')));
+    const loose = state.tasks.filter((x) => !x.done && x.date === t && !x.time).sort(byWhen);
+    const used = new Set();
+    const slotRows = ahead.slots.slice(0, 4).map((x) => {
+      const pick = loose.find((task) => !used.has(task.id) && task.minutes <= x.minutes);
+      if (pick) used.add(pick.id);
+      return h('div', { class: 'free-slot' },
+        h('span', { class: 'free-time' }, x.start + '–' + x.end, h('small', {}, minutesLabel(x.minutes))),
+        pick ? h('button', { class: 'free-put', title: '把开始时间定在 ' + x.start, onclick: () => undoable('「' + pick.title + '」排在 ' + x.start, () => change((s) => { const task = s.tasks.find((y) => y.id === pick.id); if (task) task.time = x.start; })) },
+          icon('clock'), h('span', {}, '排入：' + pick.title), h('small', {}, minutesLabel(pick.minutes))) : h('span', { class: 'grow' }),
+        h('button', { class: 'text-btn', title: '在这段时间加一件事', onclick: () => openComposer('task', '今天' + x.start + ' ') }, '+ 安排'));
+    });
+    const freeCard = h('section', { class: 'home-card home-free' },
+      h('header', {}, h('h3', {}, '今天的空闲'), h('span', { class: 'sub' }, ahead.free ? '还有 ' + minutesLabel(ahead.free) : '')),
+      h('div', { class: 'free-chart' }, timeline, ticks),
+      h('div', { class: 'free-key' }, h('span', {}, h('i', { class: 'class' }), '课'), h('span', {}, h('i', { class: 'task' }), '定了时间的任务'), h('span', {}, h('i', { class: 'open' }), '空闲')),
+      slotRows.length ? slotRows : h('p', { class: 'empty' }, nowMinute >= wholeDay.windowEnd ? '今天 ' + wholeDay.to + ' 以前已经没有空闲了。' : '今天剩下的时间都排满了。'),
+      ahead.slots.length > 4 ? h('p', { class: 'sub' }, '还有 ' + (ahead.slots.length - 4) + ' 段空闲') : null,
+      h('p', { class: 'sub' }, '按 ' + wholeDay.from + '–' + wholeDay.to + ' 计算，至少 20 分钟才算一段。「排入」会把今天还没定时间的任务放进这一段。'));
+
     // --- assistant
     const lastReply = [...state.messages].reverse().find((m) => m.role === 'assistant' && (m.spaceId || null) === null && m.text);
     const pending = state.messages.filter((m) => m.proposal && m.proposal.status === 'pending').length;
@@ -2553,7 +2988,7 @@
     const weekNo = T.dateOK(schedule.semesterStart) && monday >= schedule.semesterStart ? Math.round(C.daysBetween(schedule.semesterStart, monday) / 7) + 1 : 0;
     $('#main').replaceChildren(h('div', { class: 'home-scroll' },
       h('header', { class: 'home-head' }, h('div', {}, h('h2', {}, (state.settings.prefs.name ? state.settings.prefs.name + '，' : '') + hello), h('p', { class: 'sub' }, plainDate(t) + ' 周' + '日一二三四五六'[now.getDay()] + (weekNo && (!schedule.weekCount || weekNo <= schedule.weekCount) ? ' · 第 ' + weekNo + ' 教学周' : ''))),
-        h('div', { class: 'head-actions' }, h('button', { class: 'pill soft', onclick: () => openComposer('task') }, icon('plus'), h('span', {}, '新建任务')), h('button', { class: 'pill soft', onclick: () => openComposer('course') }, icon('plus'), h('span', {}, '添加课程')), h('button', { class: 'pill soft', onclick: () => openSessionDialog(null) }, icon('plus'), h('span', {}, '补记时间')))),
+        h('div', { class: 'head-actions' }, h('button', { class: 'pill soft', title: '快捷键：在任何页面按 N', onclick: () => openComposer('task') }, icon('plus'), h('span', {}, '新建任务')), h('button', { class: 'pill soft', onclick: () => openComposer('course') }, icon('plus'), h('span', {}, '添加课程')), h('button', { class: 'pill soft', onclick: () => openSessionDialog(null) }, icon('plus'), h('span', {}, '补记时间')))),
       hero,
       h('div', { class: 'home-grid' })));
     // The cards go into whichever column is shortest at that moment, so the columns end close together
@@ -2566,7 +3001,7 @@
     grid.classList.toggle('wide-first', count > 1);
     const cols = Array.from({ length: count }, () => grid.appendChild(h('div', { class: 'home-col' })));
     cols[0].append(todayCard);
-    for (const el of [weekCard, assistantCard, progressCard, datesCard, habitsCard, goalsCard, cardsCard, moneyCard, spacesCard]) {
+    for (const el of [freeCard, weekCard, assistantCard, progressCard, datesCard, habitsCard, goalsCard, cardsCard, moneyCard, spacesCard]) {
       if (!el) continue;
       const shortest = cols.reduce((a, b) => (b.offsetHeight < a.offsetHeight - 8 ? b : a));
       shortest.append(el);
@@ -2694,6 +3129,7 @@
       item.style.setProperty('--near', (0.5 - 0.5 * Math.cos(Math.PI * near)).toFixed(3));
     }
   });
+  rail.addEventListener('scroll', () => { if (Date.now() - (fan.at || 0) > 400) closeFan(true); }); // a scroll that brought the group into view is not a reason to close it
   rail.addEventListener('pointerleave', () => {
     rail.classList.remove('magnify');
     for (const item of rail.querySelectorAll('.rail-item')) item.style.setProperty('--near', '0');
@@ -2764,6 +3200,17 @@
     document.body.classList.remove('dragging');
     addFiles(e.dataTransfer.files);
   });
+
+  /* Repeat rules fill in the coming week when the app opens, and again when the date changes. */
+  let repeatDay = null;
+  function refreshRepeats() {
+    repeatDay = today();
+    if (!state.repeats.length) return;
+    const made = C.materializeRepeats(state, repeatDay);
+    if (made.changed && commit(made.state) && made.removed) toast(made.removed + ' 个没开始做的重复任务已被新的一次替换');
+  }
+  refreshRepeats();
+  setInterval(() => { if (today() !== repeatDay) refreshRepeats(); }, 60000);
 
   if (!state.messages.length && !state.settings.prefs.onboarded) change((s) => askOnboarding(s, 0));
   else render();

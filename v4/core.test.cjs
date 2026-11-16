@@ -675,3 +675,139 @@ test('parseTaskLine picks a space by @name and reports defaults', () => {
   assert.strictEqual(plain.minutesGiven, false);
   assert.ok(C.parseTaskLine(s, '#只有标签', TODAY).error);
 });
+
+test('repeat phrases are read into rules', () => {
+  const s = C.emptyState();
+  const D = '2026-11-16'; // a Monday
+  const rule = (line) => C.parseTaskLine(s, line, D).repeat;
+  assert.deepStrictEqual(rule('每周四 交实验报告 30分钟 #作业').rule, { kind: 'weekly', start: D, days: [4], every: 1 });
+  assert.strictEqual(rule('每周四 交实验报告 30分钟 #作业').title, '交实验报告');
+  assert.deepStrictEqual(rule('每周一三五 跑步').rule.days, [1, 3, 5]);
+  assert.deepStrictEqual(rule('每周二、四 健身').rule.days, [2, 4]);
+  assert.deepStrictEqual(rule('每周一到周五 早读').rule.days, [1, 2, 3, 4, 5]);
+  assert.deepStrictEqual(rule('工作日 晨读').rule.days, [1, 2, 3, 4, 5]);
+  assert.strictEqual(rule('每两周周四 组会').rule.every, 2);
+  assert.strictEqual(rule('每天晚上8点 背单词 20分钟').time, '20:00');
+  assert.strictEqual(rule('每晚8点 背单词').time, '20:00');
+  assert.deepStrictEqual(rule('每隔一天 复习错题').rule, { kind: 'interval', start: D, every: 2 });
+  assert.strictEqual(rule('每3天 整理笔记').rule.every, 3);
+  assert.deepStrictEqual(rule('每月1号 交房租').rule, { kind: 'monthly', start: D, day: 1 });
+  const ranged = rule('从下周一开始 每天 跑步 到12月31日').rule;
+  assert.strictEqual(ranged.start, '2026-11-23');
+  assert.strictEqual(ranged.until, '2026-12-31');
+  assert.ok(C.parseTaskLine(s, '每周 跑步3次', D).error);
+  assert.strictEqual(C.parseTaskLine(s, '明天 复习', D).task.date, '2026-11-17');
+  assert.deepStrictEqual(C.nextOccurrences(rule('每两周周四 组会').rule, D, 3), ['2026-11-19', '2026-12-03', '2026-12-17']);
+  assert.deepStrictEqual(C.nextOccurrences({ kind: 'monthly', start: '2027-01-01', day: 31 }, '2027-02-01', 2), ['2027-02-28', '2027-03-31']);
+  assert.strictEqual(C.repeatLabel(rule('每周一三五 跑步').rule), '每周一、三、五');
+});
+
+test('repeat rules make a week of tasks, never remake deleted ones, and clear missed untouched ones', () => {
+  const D = '2026-11-16';
+  let s = C.addRepeat(C.emptyState(), { title: '背单词', minutes: 20, time: '20:00', tags: ['英语'], rule: { kind: 'daily', start: D } }, D, 1);
+  const made = s.tasks.filter((t) => t.repeatId);
+  assert.strictEqual(made.length, 7);
+  assert.deepStrictEqual(made.map((t) => t.date), ['2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20', '2026-11-21', '2026-11-22']);
+  assert.strictEqual(made[0].time, '20:00');
+  assert.deepStrictEqual(made[0].tags, ['英语']);
+  // deleting one: it does not come back on the next run
+  s.tasks = s.tasks.filter((t) => t.date !== '2026-11-18');
+  s = C.materializeRepeats(s, D, 2).state;
+  assert.ok(!s.tasks.some((t) => t.date === '2026-11-18'));
+  // two days later: the 16th was never started and is cleared; the 17th was timed and stays
+  const timed = s.tasks.find((t) => t.date === '2026-11-17');
+  s.sessions.push({ id: 's1', taskId: timed.id, date: '2026-11-17', actual: 10 });
+  const later = C.materializeRepeats(s, '2026-11-19', 3);
+  assert.ok(!later.state.tasks.some((t) => t.repeatDate === '2026-11-16'));
+  assert.ok(later.state.tasks.some((t) => t.repeatDate === '2026-11-17'));
+  assert.strictEqual(later.removed, 1);
+  assert.strictEqual(later.added, 3); // the 23rd to the 25th: the first run made up to the 22nd
+  // editing changes untouched instances from today on; stopping removes them and leaves the rest as plain tasks
+  const id = later.state.repeats[0].id;
+  const edited = C.updateRepeat(later.state, id, { title: '背单词 Unit 5', minutes: 25, rule: { kind: 'weekly', days: [3], start: D } }, '2026-11-19', 4);
+  assert.deepStrictEqual(edited.tasks.filter((t) => t.repeatId && t.repeatDate >= '2026-11-19').map((t) => [t.date, t.title, t.minutes]), [['2026-11-25', '背单词 Unit 5', 25]]);
+  assert.ok(edited.tasks.some((t) => t.id === timed.id && t.title === '背单词')); // the started one keeps its old title
+  const stopped = C.stopRepeat(edited, id, '2026-11-19');
+  assert.strictEqual(stopped.repeats.length, 0);
+  assert.ok(stopped.tasks.every((t) => !t.repeatId));
+  assert.ok(stopped.tasks.some((t) => t.id === timed.id));
+  // normalize keeps a valid rule and drops links to rules that are gone
+  const round = C.normalize(JSON.parse(JSON.stringify({ ...later.state, repeats: [...later.state.repeats, { id: 'bad', title: 'x', rule: { kind: 'weekly', days: [] } }] })));
+  assert.strictEqual(round.repeats.length, 1);
+  const orphan = C.normalize(JSON.parse(JSON.stringify({ ...later.state, repeats: [] })));
+  assert.ok(orphan.tasks.every((t) => !t.repeatId && !t.repeatDate));
+});
+
+test('quick add reads exam dates and money lines', () => {
+  const s = C.emptyState();
+  s.spaces.push({ id: 'os', name: '操作系统', color: '#000', type: 'study', course: '操作系统' });
+  const d = C.parseDateLine(s, '操作系统期末考试 12月20日 9:00 @二东402', TODAY);
+  assert.deepStrictEqual(d.item, { title: '操作系统期末考试', date: '2026-12-20', place: '二东402', spaceId: 'os', time: '09:00' });
+  assert.ok(C.parseDateLine(s, '期末考试', TODAY).error);
+  assert.deepStrictEqual(C.parseMoneyLine('奶茶 15', TODAY).entry, { kind: 'out', amount: 15, category: '餐饮', note: '奶茶', date: TODAY });
+  assert.strictEqual(C.parseMoneyLine('收到生活费 1500', TODAY).entry.kind, 'in');
+  assert.strictEqual(C.parseMoneyLine('+200 兼职', TODAY).entry.category, '兼职');
+  assert.strictEqual(C.parseMoneyLine('忍住没买奶茶 15', TODAY).entry.kind, 'saved');
+  assert.strictEqual(C.parseMoneyLine('昨天 打车 32', TODAY).entry.date, '2026-11-13');
+  assert.ok(C.parseMoneyLine('奶茶', TODAY).error);
+});
+
+test('free slots sit between classes and timed tasks; late tasks spread over days with room', () => {
+  const s = C.emptyState();
+  s.schedule.settings = { semesterStart: '2026-09-07', weekCount: 20, periods: [] };
+  s.schedule.courses.push({ id: 'c1', title: '电路', weekday: 6, weeks: '1-20', startTime: '10:00', endTime: '11:35', date: '', periods: '', room: '', teacher: '' });
+  s.tasks.push({ id: 'timed', title: '组会', date: TODAY, time: '14:00', minutes: 60, spaceId: null, done: false, doneAt: null, createdAt: 1 });
+  const all = C.freeSlots(s, TODAY);
+  assert.deepStrictEqual(all.slots.map((x) => x.start + '-' + x.end), ['08:00-10:00', '11:35-14:00', '15:00-22:00']);
+  const afternoon = C.freeSlots(s, TODAY, { now: 14 * 60 + 30 });
+  assert.deepStrictEqual(afternoon.slots.map((x) => x.start + '-' + x.end), ['15:00-22:00']);
+  assert.strictEqual(afternoon.free, 420);
+  // spreading: today has 30 minutes of room, tomorrow 120
+  for (const [id, minutes, date] of [['a', 60, '2026-11-10'], ['b', 30, '2026-11-12'], ['c', 200, '2026-11-11']]) s.tasks.push({ id, title: id, date, minutes, spaceId: null, done: false, doneAt: null, createdAt: 2 });
+  s.dates.push({ id: 'exam', title: '期末', date: '2026-11-20', spaceId: 'space_1' });
+  s.tasks.find((t) => t.id === 'b').spaceId = 'space_1'; // its space has an exam soon, so it goes first
+  const plan = C.spreadTasks(s, ['a', 'b', 'c'], TODAY, { daily: 120, todayFree: 90 });
+  assert.deepStrictEqual(plan.moves.map((m) => [m.taskId, m.to, m.over]), [['b', TODAY, false], ['a', '2026-11-15', false], ['c', '2026-11-16', true]]);
+  // a task that only fits after its exam is kept before it, even if that overfills the day
+  s.dates.push({ id: 'soon', title: '测验', date: '2026-11-15', spaceId: 'space_2' });
+  s.tasks.push({ id: 'd', title: 'd', date: '2026-11-10', minutes: 100, spaceId: 'space_2', done: false, doneAt: null, createdAt: 3 });
+  const tight = C.spreadTasks(s, ['d'], TODAY, { daily: 120, todayFree: 90 });
+  assert.deepStrictEqual(tight.moves.map((m) => [m.to, m.over, m.deadlineIn]), [[TODAY, true, 1]]);
+  const moved = C.applySpread(s, plan.moves);
+  assert.strictEqual(moved.tasks.find((t) => t.id === 'a').date, '2026-11-15');
+});
+
+test('trajectory compares time by tag, counting a record toward each tag of its task', () => {
+  const s = C.emptyState();
+  s.tasks.push({ id: 'a', title: 'x', tags: ['考试', '单片机'], date: null, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: 1 });
+  s.sessions.push({ id: 's1', taskId: 'a', date: TODAY, actual: 40 }, { id: 's2', taskId: null, date: TODAY, actual: 20 });
+  const tags = C.trajectory(s, TODAY).tags;
+  assert.deepStrictEqual(tags.axes.map((a) => [a.name, a.recent]), [['#单片机', 40], ['#考试', 40], ['没有标签', 20]]);
+  assert.strictEqual(tags.recentTotal, 60);
+  assert.strictEqual(tags.overlap, true);
+  assert.strictEqual(C.trajectory(C.emptyState(), TODAY).tags, null);
+});
+
+test('reviewSummary reads a period: totals, busiest weekday and hour, areas, task ranking, the period before', () => {
+  const s = C.emptyState();
+  s.tasks.push({ id: 'a', title: '复习单片机', date: null, minutes: 30, spaceId: 'space_1', done: true, doneAt: new Date('2026-11-12T10:00:00').getTime(), createdAt: 1 });
+  s.sessions.push(
+    { id: '1', taskId: 'a', title: '复习单片机', date: '2026-11-11', actual: 50, spaceId: 'space_1', hour: 14 },
+    { id: '2', taskId: 'a', title: '复习单片机', date: '2026-11-12', actual: 30, spaceId: 'space_1', hour: 14 },
+    { id: '3', taskId: null, title: '看论文', date: '2026-11-12', actual: 20, spaceId: null, hour: null },
+    { id: '4', taskId: null, title: '更早', date: '2026-11-05', actual: 45, spaceId: null, hour: 9 });
+  const r = C.reviewSummary(s, '2026-11-09', '2026-11-15');
+  assert.strictEqual(r.total, 100);
+  assert.strictEqual(r.previous, 45);
+  assert.strictEqual(r.activeDays, 2);
+  assert.strictEqual(r.done, 1);
+  assert.strictEqual(r.series.length, 7);
+  assert.deepStrictEqual(r.series[3], { from: '2026-11-12', to: '2026-11-12', minutes: 50, done: 1 });
+  assert.strictEqual(r.bestWeekday, 2); // Wednesday the 11th: 50 against Thursday's 50 — the earlier one wins a tie
+  assert.deepStrictEqual(r.peakHour, { hour: 14, minutes: 80 });
+  assert.deepStrictEqual(r.areas.map((a) => [a.name, a.minutes]), [['学习', 80], ['未分区', 20]]);
+  assert.deepStrictEqual(r.tasks.map((t) => [t.title, t.minutes, t.sessions]), [['复习单片机', 80, 2], ['看论文', 20, 1]]);
+  const weekly = C.reviewSummary(s, '2026-11-02', '2026-11-15', { bucket: 'week' });
+  assert.deepStrictEqual(weekly.series.map((x) => x.minutes), [45, 100]);
+  assert.strictEqual(C.reviewSummary(C.emptyState(), '2026-11-09', '2026-11-15').bestWeekday, null);
+});
