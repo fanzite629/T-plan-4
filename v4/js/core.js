@@ -65,7 +65,7 @@
       schedule: Timetable.empty(),
       settings: {
         agent: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', modelId: '', models: [], vision: null },
-        prefs: { segment: 25, dailyMinutes: null, bestTime: null, onboarded: false, timerCompact: false, listWidth: 320, name: '', remindMinutes: 10, railCompact: false, railFolded: {} },
+        prefs: { segment: 25, dailyMinutes: null, bestTime: null, onboarded: false, timerCompact: false, listWidth: 320, name: '', remindMinutes: 10, railCompact: false, railFolded: {}, welcomeVersion: 0, preferencesConfigured: false, purposes: [], pace: 'balanced', reminderMode: 'end' },
       },
     };
   }
@@ -85,6 +85,15 @@
     s.settings.agent = { ...base.settings.agent, ...(isObject(s.settings.agent) ? s.settings.agent : {}) };
     s.settings.prefs = { ...base.settings.prefs, ...(isObject(s.settings.prefs) ? s.settings.prefs : {}) };
     if (!isObject(s.settings.prefs.railFolded)) s.settings.prefs.railFolded = {};
+    const oldPrefs = raw.settings && raw.settings.prefs;
+    // An upgrade must retain the old start/end reminder behavior until the user chooses otherwise.
+    if (isObject(oldPrefs) && oldPrefs.reminderMode === undefined) s.settings.prefs.reminderMode = 'start-end';
+    const p = s.settings.prefs;
+    p.purposes = [...new Set(Array.isArray(p.purposes) ? p.purposes.filter(x => PURPOSES.some(([id]) => id === x)) : [])];
+    if (!validPace(p.pace)) p.pace = 'balanced';
+    if (!REMINDERS.some(([id]) => id === p.reminderMode)) p.reminderMode = 'end';
+    p.welcomeVersion = p.welcomeVersion === 1 ? 1 : 0;
+    p.preferencesConfigured = p.preferencesConfigured === true;
     // Spaces saved before types existed: the four built-in ones get their natural type, others the task-centred one.
     const builtIn = { space_1: 'study', space_2: 'project', space_3: 'habit', space_4: 'life' };
     for (const sp of s.spaces) if (!SPACE_TYPES.some((t) => t.id === sp.type)) sp.type = builtIn[sp.id] || 'study';
@@ -167,6 +176,51 @@
     const n = Math.round(Number(value));
     return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
   }
+
+  /* Preferences only alter future defaults and suggestions; never rewrite personal records. */
+  const PURPOSES = [['study', '学习备考'], ['project', '项目推进'], ['habit', '习惯养成'], ['life', '生活安排']];
+  const PACES = {
+    focused: { label: '紧凑高效', breakMinutes: 3, reserve: 0.1 },
+    balanced: { label: '均衡安排', breakMinutes: 5, reserve: 0.2 },
+    spacious: { label: '多留空白', breakMinutes: 10, reserve: 0.35 },
+  };
+  const REMINDERS = [['quiet', '保持安静'], ['end', '仅结束提醒'], ['start-end', '开始与结束']];
+  const validPace = key => Object.prototype.hasOwnProperty.call(PACES, key);
+  function planningPreferences(prefs = {}) {
+    const pace = validPace(prefs.pace) ? PACES[prefs.pace] : PACES.balanced;
+    const daily = cleanMinutes(prefs.dailyMinutes, null, 1, 960);
+    const reserve = prefs.preferencesConfigured === true ? pace.reserve : 0;
+    return {
+      segment: cleanMinutes(prefs.segment, 25, 5, 90),
+      purposes: PURPOSES.filter(([id]) => Array.isArray(prefs.purposes) && prefs.purposes.includes(id)).map(([, name]) => name),
+      pace: pace.label, breakMinutes: pace.breakMinutes, reservePercent: Math.round(reserve * 100),
+      dailyAvailableMinutes: daily, dailyFocusMinutes: daily === null ? null : Math.max(1, Math.floor(daily * (1 - reserve))),
+      reminderMode: REMINDERS.some(([id]) => id === prefs.reminderMode) ? prefs.reminderMode : 'end',
+    };
+  }
+  function shouldNotify(prefs, event) {
+    const mode = planningPreferences(prefs).reminderMode;
+    return mode !== 'quiet' && (event === 'end' || (mode === 'start-end' && (event === 'start' || event === 'schedule')));
+  }
+  function needsOnboarding(state) {
+    if (state.settings.prefs.welcomeVersion === 1 || state.settings.prefs.onboarded || state.timer) return false;
+    return !['tasks', 'habits', 'goals', 'sessions', 'messages', 'memory', 'reflections', 'metrics', 'dates', 'cards'].some(key => state[key].length)
+      && !state.schedule.courses.length && !state.money.entries.length && !Object.keys(state.weekPlans).length;
+  }
+  function savePreferences(state, values, skip = false) {
+    const next = clone(state), p = next.settings.prefs;
+    if (!skip) {
+      const segment = Number(values.segment), daily = values.dailyMinutes === '' || values.dailyMinutes == null ? null : Number(values.dailyMinutes);
+      if (!Number.isInteger(segment) || segment < 5 || segment > 90) throw new Error('一段专注请填 5–90 的整数分钟');
+      if (daily !== null && (!Number.isInteger(daily) || daily < 1 || daily > 960)) throw new Error('每天可安排请填 1–960 分钟，或留空');
+      if (!validPace(values.pace) || !REMINDERS.some(([id]) => id === values.reminderMode)) throw new Error('请选择有效的节奏和提醒方式');
+      if (!Array.isArray(values.purposes) || values.purposes.some(id => !PURPOSES.some(([key]) => key === id))) throw new Error('请选择有效的使用用途');
+      Object.assign(p, { name: cleanText(values.name, 20), segment, dailyMinutes: daily, purposes: [...new Set(values.purposes)], pace: values.pace, reminderMode: values.reminderMode, preferencesConfigured: true });
+    }
+    p.welcomeVersion = 1;
+    p.onboarded = true;
+    return next;
+  }
   function spaceIdByName(state, name) {
     const wanted = cleanText(name, 40).toLowerCase();
     if (!wanted) return null;
@@ -185,7 +239,7 @@
   function taskFields(state, a, label = '任务') {
     const title = cleanText(a.title, 150);
     if (!title) throw new Error(label + '缺少标题');
-    const out = { title, date: validDate(a.date) ? a.date : null, minutes: cleanMinutes(a.minutes, 30), spaceId: pickSpace(state, a) };
+    const out = { title, date: validDate(a.date) ? a.date : null, minutes: cleanMinutes(a.minutes, planningPreferences(state.settings.prefs).segment), spaceId: pickSpace(state, a) };
     if (out.date && validTime(a.time)) out.time = a.time;
     const tags = cleanTags(a.tags);
     if (tags.length) out.tags = tags;
@@ -193,7 +247,7 @@
       out.steps = a.steps.slice(0, MAX_STEPS).map((step) => {
         const stepTitle = cleanText(isObject(step) ? step.title : step, 100);
         if (!stepTitle) throw new Error(label + '的步骤缺少内容');
-        return { title: stepTitle, minutes: cleanMinutes(isObject(step) ? step.minutes : null, 25, 1, 180) };
+        return { title: stepTitle, minutes: cleanMinutes(isObject(step) ? step.minutes : null, planningPreferences(state.settings.prefs).segment, 1, 180) };
       });
       out.minutes = sum(out.steps, (x) => x.minutes);
     }
@@ -446,7 +500,7 @@
     const plan = state.weekPlans[monday] || {};
     const dated = state.tasks.filter((t) => t.date && t.date >= monday && t.date <= end);
     const loose = state.tasks.filter((t) => !t.date && t.week === monday);
-    const daily = state.settings.prefs.dailyMinutes;
+    const daily = planningPreferences(state.settings.prefs).dailyFocusMinutes;
     const capacity = plan.capacity != null ? plan.capacity : daily ? daily * 7 : null;
     const planned = sum(dated, (t) => t.minutes) + sum(loose, (t) => t.minutes);
     return {
@@ -859,7 +913,7 @@
     if (!task) throw new Error('任务已不存在');
     if (task.done) throw new Error('这个任务已经完成了');
     if (!task.date) task.date = todayISO(new Date(now)); // work started today belongs on today's list
-    if (!task.steps) task.steps = [{ title: task.title, minutes: Math.min(180, task.minutes), done: false }];
+    if (!task.steps) task.steps = splitIntoSteps(task.minutes, planningPreferences(s.settings.prefs).segment, task.title).map(step => ({ ...step, done: false }));
     let index = task.steps.findIndex((x) => !x.done);
     if (index < 0) { task.steps.forEach((x) => { x.done = false; }); index = 0; }
     s.timer = { taskId, step: index, phase: 'running', acc: 0, lastAt: now, startedAt: now };
@@ -974,6 +1028,7 @@
       today,
       weekday: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(today + 'T12:00:00').getDay()],
       preferences: (({ railCompact, railFolded, listWidth, timerCompact, ...rest }) => rest)(state.settings.prefs), // layout choices mean nothing to the model
+      planningPolicy: planningPreferences(state.settings.prefs),
       scheduledCourses: Timetable.events(state.schedule, today, addDays(today, 13)).map(e => ({ title: e.title, date: e.date, startTime: e.startTime, endTime: e.endTime, room: e.room })),
       profile: buildProfile(state, today),
       memory: state.memory.map((m) => m.text),
@@ -1118,19 +1173,23 @@
     });
     const parsed = parseLine(text, today);
     if (!parsed) return { error: '没有读到要做的事，例如「明天 复习单片机 40分钟」' };
+    const minutesGiven = readWhen(takeTags(text).rest, today).minutes !== null;
+    if (!minutesGiven) parsed.minutes = planningPreferences(state.settings.prefs).segment;
     const task = { title: parsed.title, date: parsed.date, minutes: parsed.minutes, spaceId: state.spaces.some((x) => x.id === spaceId) ? spaceId : null, tags: parsed.tags || [] };
     if (parsed.time) task.time = parsed.time;
-    return { task, minutesGiven: /\d+\s*(?:分钟|分|min|小时|h|个小时)/i.test(text) || /半小时/.test(text), spaceName, unknownSpace };
+    return { task, minutesGiven, spaceName, unknownSpace };
   }
 
   /* Evenly sized segments for one sitting, used when no model is connected. */
   function splitIntoSteps(totalMinutes, segment, label) {
-    const count = Math.min(MAX_STEPS, Math.max(1, Math.round(totalMinutes / segment)));
-    const each = Math.round(totalMinutes / count);
-    return Array.from({ length: count }, (_, i) => ({ title: i === count - 1 && count > 1 ? '回顾并记下卡住的地方' : label ? label + '（' + (i + 1) + '/' + count + '）' : '第 ' + (i + 1) + ' 段', minutes: each }));
+    const total = cleanMinutes(totalMinutes, 25);
+    const count = Math.min(MAX_STEPS, Math.max(1, Math.ceil(total / cleanMinutes(segment, 25, 5, 90))));
+    const each = Math.floor(total / count), extra = total % count;
+    return Array.from({ length: count }, (_, i) => ({ title: i === count - 1 && count > 1 ? '回顾并记下卡住的地方' : label ? label + '（' + (i + 1) + '/' + count + '）' : label || '第 1 段', minutes: each + (i < extra ? 1 : 0) }));
   }
 
   function localReply(text, today, prefs = {}) {
+    const policy = planningPreferences(prefs);
     const lines = String(text).split(/\n+/).map((x) => x.trim()).filter(Boolean);
     const actions = [];
     for (const line of lines.slice(0, MAX_ACTIONS)) {
@@ -1140,8 +1199,9 @@
       if (money) { actions.push(money); continue; }
       const task = parseLine(line, today);
       if (!task) continue;
-      if (task.minutes >= 45) {
-        task.steps = splitIntoSteps(task.minutes, prefs.segment || 25, task.title.slice(0, 80));
+      if (readWhen(takeTags(line).rest, today).minutes === null) task.minutes = policy.segment;
+      if (task.minutes > policy.segment) {
+        task.steps = splitIntoSteps(task.minutes, policy.segment, task.title.slice(0, 80));
         if (!task.date) task.date = today;
       }
       actions.push(task);
@@ -1151,7 +1211,7 @@
       reply: !actions.length
         ? '现在是本地模式，我只能把你写的每一行变成任务。连接 AI 模型后，我才能读课件、回答问题和帮你做计划。'
         : planned
-          ? '现在是本地模式（没有连接 AI 模型），我按你习惯的 ' + (prefs.segment || 25) + ' 分钟把它等分成了几段，每段要做什么请点文字自己写。连接模型后我可以根据课件内容来分。'
+          ? '现在是本地模式（没有连接 AI 模型），我以每段 ' + policy.segment + ' 分钟为基准拆分，保留总时长。按「' + policy.pace + '」，段间建议休息 ' + policy.breakMinutes + ' 分钟（不计入专注时长）。每段要做什么请点文字自己写。'
           : '现在是本地模式（没有连接 AI 模型），我把每一行当作一件事。请检查下面的提议。',
       actions,
       options: [],
@@ -1162,7 +1222,7 @@
   }
 
   return {
-    VERSION, SPACE_COLORS, SPACE_TYPES, logMetric,
+    VERSION, SPACE_COLORS, SPACE_TYPES, logMetric, PURPOSES, PACES, REMINDERS, planningPreferences, shouldNotify, needsOnboarding, savePreferences,
     clone, uid, todayISO, validDate, validTime, MONEY_CATEGORIES, addMoney, updateMoney, setMoneySettings, moneySummary, moneyCandles, moneyFlow, parseMoney, trajectory, addSession, updateSession, wrapUp, moveTask, setWeekPlan, weekSummary, isV3Export, convertV3, CARD_INTERVALS, newCard, dueCards, reviewCard, cardStats, upcomingDates, daysBetween, editTaskSteps, toggleTask, addDays, weekStart,
     emptyState, normalize, validateActions, resolveProposal, editProposal, addMemory,
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,

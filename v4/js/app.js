@@ -17,7 +17,7 @@
     const key = platform.loadKey(state.settings.agent.provider, state.settings.agent.provider);
     if (key) platform.saveKey(state.settings.agent.provider, key, state.settings.agent.provider);
   } catch { /* keys stay as they were */ }
-  const ui = { panelSection: 'model', mode: state.settings.prefs.onboarded ? 'home' : 'planner', // the first-run interview happens in the chat
+  const ui = { panelSection: 'model', mode: 'home',
      space: null, tag: null, tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0, search: '', abort: null };
   const library = new Map(); // files read during this session, by name; kept out of saved state because they are large
   let pip = null; // floating timer window, when open
@@ -44,8 +44,10 @@
       toast('没有保存：' + error.message);
       return false;
     }
+    const starting = !state.timer && next.timer && next.timer.phase === 'running';
     state = next;
     render();
+    if (starting) announce('start', '开始专注', C.timerView(state, Date.now()).step.title);
     return true;
   }
   /* Convenience for small edits: mutate a copy, then commit it. */
@@ -242,6 +244,10 @@
     project: ['帮我把这个项目拆成几个阶段', '这周这个项目该做什么？', '我卡住了，帮我找下一步'],
     habit: ['我想养成一个新习惯', '记录今天的体重', '看看我这周的打卡情况'],
     life: ['帮我记几件要办的事', '这周有哪些事要办？', '提醒我下周要交的东西'],
+  };
+  const preferredStarters = () => {
+    const selected = (state.settings.prefs.purposes || []).flatMap(key => (STARTERS_BY_TYPE[key] || []).slice(0, 1));
+    return selected.length ? selected : STARTERS;
   };
   const askOnboarding = (s, index) => say(s, ONBOARDING[index].text, { options: ONBOARDING[index].options.map(([label, value]) => ({ label, pref: { index, value } })) });
   function answerOnboarding(option) {
@@ -460,7 +466,7 @@
     const sessions = state.sessions.filter((x) => inSpace(x));
     const minutes = (list) => list.reduce((n, x) => n + x.actual, 0);
     const habits = state.habits.filter(inSpace);
-    const budget = ui.space ? null : state.settings.prefs.dailyMinutes || null; // the daily budget is for everything, not one space
+    const budget = ui.space ? null : C.planningPreferences(state.settings.prefs).dailyFocusMinutes; // future planning leaves the chosen amount of breathing room
     const planned = dated.reduce((a, x) => a + x.minutes, 0);
     return {
       planned, budget, over: budget && planned > budget ? planned - budget : 0,
@@ -482,7 +488,7 @@
     const panel = h('div', { class: 'sum-panel' }, h('div', { class: 'sum-grid' },
       cell(String(n.left.length), '今天还剩（项）'), cell(minutesLabel(n.left.reduce((a, x) => a + x.minutes, 0)), '还需要的时间'),
       cell(minutesLabel(n.weekFocus), '本周专注'), cell(n.habits ? n.habitsDone + ' / ' + n.habits : '—', '今天的习惯'),
-      cell(String(n.overdue), '已过期（项）'), cell(minutesLabel(n.planned) + (n.budget ? ' / ' + minutesLabel(n.budget) : ''), n.over ? '今天已安排，超出每天可安排的 ' + minutesLabel(n.over) : n.budget ? '今天已安排 / 每天可安排' : '今天已安排')));
+      cell(String(n.overdue), '已过期（项）'), cell(minutesLabel(n.planned) + (n.budget ? ' / ' + minutesLabel(n.budget) : ''), n.over ? '今天已安排，超出建议专注上限 ' + minutesLabel(n.over) : n.budget ? '今天已安排 / 建议专注上限' : '今天已安排')));
     const box = h('div', { class: 'summary' + (summaryOpen ? ' open' : ''), style: '--open:' + (summaryOpen ? 1 : 0) }, capsule, panel);
     const set = (value, dragging) => {
       box.style.setProperty('--open', String(value));
@@ -643,7 +649,7 @@
         onkeydown: (e) => {
           if (e.key !== 'Enter' || e.isComposing || !e.target.value.trim()) return;
           const title = e.target.value.trim();
-          change((s) => s.tasks.push({ id: C.uid('t'), title, date: null, minutes: 30, spaceId: ui.space, done: false, doneAt: null, createdAt: Date.now(), origin: 'user' }));
+          change((s) => s.tasks.push({ id: C.uid('t'), title, date: null, minutes: C.planningPreferences(s.settings.prefs).segment, spaceId: ui.space, done: false, doneAt: null, createdAt: Date.now(), origin: 'user' }));
           const again = $('.quick-add');
           if (again) again.focus();
         } }) : null;
@@ -909,9 +915,9 @@
         if (accept && withTimer) {
           const created = next.messages.find((m) => m.id === message.id).proposal.created.map((id) => next.tasks.find((t) => t.id === id));
           const first = created.find((t) => t.steps) || created[0];
-          if (first) { next = C.startTimer(next, first.id, Date.now()); openFloating(); }
+          if (first) next = C.startTimer(next, first.id, Date.now());
         }
-        if (!accept || withTimer) { if (commit(next) && accept) toast('已写入，计时开始'); }
+        if (!accept || withTimer) { if (commit(next) && accept) { openFloating(); toast('已写入，计时开始'); } }
         else undoable('已写入', () => commit(next));
       } catch (error) { toast(error.message); }
     };
@@ -991,7 +997,7 @@
       !thread.length && !ui.busy ? h('div', { class: 'welcome' },
         h('h3', {}, space(ui.space) ? '在「' + space(ui.space).name + '」里想推进什么？' : (state.settings.prefs.name ? state.settings.prefs.name + '，' : '') + '今天想推进什么？'),
         h('p', { class: 'sub' }, '告诉我你的任务、目标或者困难，也可以把课件、图片拖进来。我会先看你的安排和记录，再提出修改，你确认之后才会写入。'),
-        h('div', { class: 'starters' }, (space(ui.space) ? STARTERS_BY_TYPE[space(ui.space).type] : STARTERS).map((text) => h('button', { class: 'pill soft', onclick: () => send(text) }, text)))) : null,
+        h('div', { class: 'starters' }, (space(ui.space) ? STARTERS_BY_TYPE[space(ui.space).type] : preferredStarters()).map((text) => h('button', { class: 'pill soft', onclick: () => send(text) }, text)))) : null,
       ui.busy ? h('div', { class: 'msg theirs' }, h('div', { class: 'bubble typing', role: 'status' }, h('i'), h('i'), h('i'), ui.busyText ? h('span', { class: 'sub' }, ui.busyText) : null)) : null);
     const input = h('textarea', {
       id: 'composer', rows: 2, maxLength: 4000, value: ui.draft,
@@ -1162,7 +1168,15 @@
       tone.connect(gain).connect(audio.destination);
       tone.start();
       tone.stop(audio.currentTime + 0.8);
+      tone.onended = () => audio.close();
     } catch { /* sound is optional */ }
+  }
+  function announce(event, title, text) {
+    if (!C.shouldNotify(state.settings.prefs, event)) return;
+    toast(title + '：' + text);
+    if (platform.notify) { platform.notify(title, text); return; }
+    beep();
+    try { if (canNotify() && Notification.permission === 'granted') new Notification('T计划 · ' + title, { body: text }); } catch { /* in-window reminder remains available */ }
   }
   function finishCurrentStep() {
     const result = C.finishStep(state, Date.now());
@@ -1232,11 +1246,11 @@
     const fill = doc.getElementById('dockFill');
     if (fill) fill.style.width = Math.min(100, (view.elapsedMs / (view.step.minutes * 60000)) * 100) + '%';
     document.title = (view.due ? '到时间了 · ' : clock(view.remainingMs) + ' · ') + view.step.title;
-    const key = view.task.id + ':' + view.index + ':' + view.step.minutes;
+    const key = view.task.id + ':' + view.index + ':' + view.step.minutes + ':' + state.timer.startedAt;
     if (view.due && view.running && dueNotified !== key) {
       dueNotified = key;
-      beep();
-      toast('「' + view.step.title + '」到时间了');
+      const p = C.planningPreferences(state.settings.prefs);
+      announce('end', '专注到时间了', '「' + view.step.title + '」' + (view.index < view.total - 1 ? '，建议休息 ' + p.breakMinutes + ' 分钟后再继续' : '，可以记录这一轮的收获'));
     }
   }
   setInterval(() => { if (state.timer) tick(); else if (document.title !== 'T计划') document.title = 'T计划'; }, 500);
@@ -1246,6 +1260,7 @@
   const reminded = new Set();
   const canNotify = () => typeof Notification === 'function';
   function checkReminders() {
+    if (!C.shouldNotify(state.settings.prefs, 'schedule')) return;
     const lead = Number(state.settings.prefs.remindMinutes) || 0;
     if (!lead) return;
     const now = new Date();
@@ -1259,9 +1274,7 @@
     if (!due.length) return;
     for (const item of due) reminded.add(item.key);
     const text = due.map((item) => item.start + ' ' + item.text).join('；');
-    beep();
-    toast('快到时间了：' + text);
-    try { if (canNotify() && Notification.permission === 'granted') new Notification('T计划 · 快到时间了', { body: text }); } catch { /* the in-window reminder was already shown */ }
+    announce('schedule', '快到时间了', text);
   }
   setInterval(checkReminders, 30000);
   setTimeout(checkReminders, 1500);
@@ -1817,7 +1830,7 @@
 
   /* `draft` carries what was typed so far when the dialog is rebuilt after a step edit. */
   function openTaskDialog(task, draft) {
-    const v = draft || { title: task ? task.title : '', date: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today(), next: task ? task.next || '' : '', time: task ? task.time || '' : '', minutes: task ? task.minutes : 30, space: task ? task.spaceId || '' : ui.space || '', tags: task ? task.tags || [] : ui.tag ? [ui.tag] : [] };
+    const v = draft || { title: task ? task.title : '', date: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today(), next: task ? task.next || '' : '', time: task ? task.time || '' : '', minutes: task ? task.minutes : C.planningPreferences(state.settings.prefs).segment, space: task ? task.spaceId || '' : ui.space || '', tags: task ? task.tags || [] : ui.tag ? [ui.tag] : [] };
     const typed = () => ({ next: form.next.value, title: form.title.value, date: form.date.value, time: form.time.value, minutes: form.minutes.value, space: form.space.value, tags: C.cleanTags(form.tags.value) });
     // Tags already used elsewhere, offered with one click so the same word is not spelled two ways.
     const known = tagsInUse(() => true).map(([tag]) => tag);
@@ -2135,14 +2148,16 @@
         saveRow(),
       ]],
       rhythm: ['我的节奏', 'brain', () => [
+        h('button', { type: 'button', class: 'btn outline', onclick: () => { closePanel(); onboarding.open(false); } }, '称呼与偏好设置'),
+        h('p', { class: 'sub' }, '使用用途、专注时长、安排节奏和提醒方式，都可以在欢迎页中调整。已有任务与计时不会被重新拆分。'),
         field('怎么称呼你（显示在问候语里，也会告诉助手）', h('input', { name: 'name', maxLength: 20, value: d.name, placeholder: '可以不填', oninput: (e) => { d.name = e.target.value; } })),
         h('div', { class: 'row' },
           field('一段专注（分钟）', h('input', { name: 'segment', type: 'number', min: 5, max: 90, value: d.segment, oninput: (e) => { d.segment = e.target.value; } })),
           field('每天可安排（分钟）', h('input', { name: 'daily', type: 'number', min: 0, max: 960, value: d.daily, oninput: (e) => { d.daily = e.target.value; } }))),
-        h('p', { class: 'sub' }, '助手按这两个数字拆分步骤和安排每天的任务量。计时记录多了以后，它会参考你的真实速度。'),
+        h('p', { class: 'sub' }, '新任务默认使用专注时长；每日时间按所选节奏预留空白。已填明时长的任务保留原值。'),
         field('上课和有开始时间的任务，提前多久提醒', h('select', { name: 'remind', onchange: (e) => { d.remind = Number(e.target.value); } },
           [[0, '不提醒'], [5, '提前 5 分钟'], [10, '提前 10 分钟'], [15, '提前 15 分钟'], [30, '提前 30 分钟']].map(([value, label]) => h('option', { value, selected: value === d.remind }, label)))),
-        h('p', { class: 'sub' }, '提醒会在这个窗口里弹出并响一声，所以需要程序开着。' + (canNotify() ? (Notification.permission === 'granted' ? '系统通知已开启，窗口在后台时也能看到。' : Notification.permission === 'denied' ? '系统通知被浏览器或系统拒绝了，只能在窗口里提醒。' : '') : '这个环境不支持系统通知，只能在窗口里提醒。')),
+        h('p', { class: 'sub' }, '课前及任务开始前提醒仅在「开始与结束」模式下生效，需要程序开着。' + (platform.notify ? '桌面版使用 Windows 提示音和通知；系统免打扰可能隐藏通知。' : '浏览器未允许系统通知时，只在页面内提醒。')),
         canNotify() && Notification.permission === 'default' ? h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn outline slim', onclick: () => { try { Promise.resolve(Notification.requestPermission()).then(again, again); } catch { toast('这个环境不能开启系统通知'); } } }, '开启系统通知')) : null,
         saveRow(),
       ]],
@@ -2213,7 +2228,7 @@
           s.spaces.push({ id: C.uid('space'), name, color: C.SPACE_COLORS[s.spaces.length % C.SPACE_COLORS.length], type: 'study', course: title });
         }
       })),
-      addTask: (title) => { const sp = spaceForCourse(title); openTaskDialog(null, { title: '', date: today(), time: '', minutes: 30, space: sp ? sp.id : '' }); },
+      addTask: (title) => { const sp = spaceForCourse(title); openTaskDialog(null, { title: '', date: today(), time: '', minutes: C.planningPreferences(state.settings.prefs).segment, space: sp ? sp.id : '' }); },
       addDate: (title) => { const sp = spaceForCourse(title); openDateDialog(null, { title: title + ' 考试', spaceId: sp ? sp.id : null }); },
       openSpace: (id) => { ui.mode = 'planner'; ui.space = id; render(); },
     } });
@@ -2429,19 +2444,19 @@
     // --- today
     const n = todayNumbers(all);
     const todayTasks = state.tasks.filter((x) => x.date && (x.date === t || (x.date < t && !x.done))).sort(byWhen);
-    const budget = state.settings.prefs.dailyMinutes || null;
+    const budget = C.planningPreferences(state.settings.prefs).dailyFocusMinutes;
     const bar = (value, total, cls) => h('div', { class: 'home-bar ' + (cls || '') }, h('i', { style: 'width:' + Math.min(100, total ? (value / total) * 100 : 0).toFixed(1) + '%' }));
     const quick = h('input', { class: 'quick-add', placeholder: '加一件今天要做的事，按回车', maxLength: 150, 'aria-label': '添加今天的任务', onkeydown: (e) => {
       if (e.key !== 'Enter' || e.isComposing || !e.target.value.trim()) return;
       const title = e.target.value.trim();
-      if (change((s) => s.tasks.push({ id: C.uid('t'), title, date: t, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: Date.now(), origin: 'user' }))) { const again = $('.home-today .quick-add'); if (again) again.focus(); }
+      if (change((s) => s.tasks.push({ id: C.uid('t'), title, date: t, minutes: C.planningPreferences(s.settings.prefs).segment, spaceId: null, done: false, doneAt: null, createdAt: Date.now(), origin: 'user' }))) { const again = $('.home-today .quick-add'); if (again) again.focus(); }
     } });
     const todayCard = h('section', { class: 'home-card home-today' },
       h('header', {}, h('h3', {}, '今天 · ' + plainDate(t) + ' 周' + '日一二三四五六'[now.getDay()]), link('全部任务 ›', () => open('planner', null))),
       h('div', { class: 'home-figures' },
         h('div', {}, h('strong', {}, n.done + ' / ' + todayTasks.length), h('small', {}, '完成 / 今天的事')),
         h('div', {}, h('strong', {}, minutesLabel(n.focus)), h('small', {}, '今天已记录')),
-        h('div', { class: n.over ? 'over' : '' }, h('strong', {}, minutesLabel(n.planned) + (budget ? ' / ' + minutesLabel(budget) : '')), h('small', {}, n.over ? '已安排，超出 ' + minutesLabel(n.over) : budget ? '已安排 / 每天可安排' : '已安排'), budget ? bar(n.planned, budget, n.over ? 'over' : '') : null)),
+        h('div', { class: n.over ? 'over' : '' }, h('strong', {}, minutesLabel(n.planned) + (budget ? ' / ' + minutesLabel(budget) : '')), h('small', {}, n.over ? '已安排，超出 ' + minutesLabel(n.over) : budget ? '已安排 / 建议专注上限' : '已安排'), budget ? bar(n.planned, budget, n.over ? 'over' : '') : null)),
       timetable.daily(t).slice(1), todayTasks.length ? todayTasks.map(taskRow) : h('p', { class: 'empty' }, '今天还没有任务。'), quick);
 
     // --- the week
@@ -2544,7 +2559,7 @@
       pending ? h('button', { class: 'home-warn as-button', onclick: () => open('planner', null) }, '有 ' + pending + ' 份提议在等你确认') : null,
       lastReply ? h('p', { class: 'home-reply' }, lastReply.text.slice(0, 160) + (lastReply.text.length > 160 ? '…' : '')) : h('p', { class: 'sub' }, modelName() ? '告诉我你的任务、目标或者困难，我先看你的安排和记录再提议。' : '还没有连接 AI 模型，现在只能把每一行变成任务。'),
       h('div', { class: 'home-ask' }, askBox, h('button', { class: 'send', 'aria-label': '发送', onclick: () => { if (askBox.value.trim()) ask(askBox.value.trim()); } }, icon('send'))),
-      h('div', { class: 'starters' }, STARTERS.map((text) => h('button', { class: 'pill soft', onclick: () => ask(text) }, text)),
+      h('div', { class: 'starters' }, preferredStarters().map((text) => h('button', { class: 'pill soft', onclick: () => ask(text) }, text)),
         !modelName() ? h('button', { class: 'pill soft', onclick: () => openSettings('model') }, icon('plus'), '连接模型') : null));
 
     const hour = now.getHours();
@@ -2555,6 +2570,8 @@
       h('header', { class: 'home-head' }, h('div', {}, h('h2', {}, (state.settings.prefs.name ? state.settings.prefs.name + '，' : '') + hello), h('p', { class: 'sub' }, plainDate(t) + ' 周' + '日一二三四五六'[now.getDay()] + (weekNo && (!schedule.weekCount || weekNo <= schedule.weekCount) ? ' · 第 ' + weekNo + ' 教学周' : ''))),
         h('div', { class: 'head-actions' }, h('button', { class: 'pill soft', onclick: () => openComposer('task') }, icon('plus'), h('span', {}, '新建任务')), h('button', { class: 'pill soft', onclick: () => openComposer('course') }, icon('plus'), h('span', {}, '添加课程')), h('button', { class: 'pill soft', onclick: () => openSessionDialog(null) }, icon('plus'), h('span', {}, '补记时间')))),
       hero,
+      state.settings.prefs.welcomeVersion !== 1 ? h('section', { class: 'welcome-banner' }, h('div', {}, h('strong', {}, '让 T计划 更懂您'), h('p', {}, '新增称呼与偏好设置，不会改变已有课表、任务和计时。')),
+        h('button', { class: 'btn outline slim', onclick: () => onboarding.open(true) }, '设置使用偏好')) : null,
       h('div', { class: 'home-grid' })));
     // The cards go into whichever column is shortest at that moment, so the columns end close together
     // instead of one running long beside an empty one. Today stays first in the widest column.
@@ -2624,7 +2641,7 @@
     const quickAdd = (fields, placeholder) => h('input', { class: 'wk-add', placeholder, maxLength: 150, 'aria-label': placeholder, onkeydown: (e) => {
       if (e.key !== 'Enter' || e.isComposing || !e.target.value.trim()) return;
       const title = e.target.value.trim();
-      change((s) => s.tasks.push({ id: C.uid('t'), title, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: Date.now(), origin: 'user', date: null, ...fields }));
+      change((s) => s.tasks.push({ id: C.uid('t'), title, minutes: C.planningPreferences(s.settings.prefs).segment, spaceId: null, done: false, doneAt: null, createdAt: Date.now(), origin: 'user', date: null, ...fields }));
     } });
     const recordedOn = (d) => state.sessions.filter((x) => x.date === d).reduce((n, x) => n + x.actual, 0);
     const dayColumn = (d) => {
@@ -2655,7 +2672,7 @@
             h('textarea', { rows: 3, maxLength: 400, value: sum.focus, placeholder: '例如：\n操作系统复习到第 5 章\n交实验报告', onchange: saveFocus })),
           h('div', { class: 'field wk-side' }, h('span', {}, '这一周的时间'), h('div', { class: 'wk-stats' },
             h('label', { class: 'wk-stat edit' }, h('input', { type: 'number', min: 0, max: 10080, 'aria-label': '本周可投入分钟', value: sum.capacityIsDefault ? '' : sum.capacity, placeholder: sum.capacity != null ? String(sum.capacity) : '未设', onchange: saveCapacity }),
-              h('small', {}, '本周可投入（分钟）' + (sum.capacityIsDefault && sum.capacity != null ? ' · 按每天 ' + state.settings.prefs.dailyMinutes + ' 分钟算' : sum.capacity == null ? ' · 点数字填写' : ''))),
+              h('small', {}, '本周可投入（分钟）' + (sum.capacityIsDefault && sum.capacity != null ? ' · 按每日建议专注 ' + C.planningPreferences(state.settings.prefs).dailyFocusMinutes + ' 分钟算' : sum.capacity == null ? ' · 点数字填写' : ''))),
             stat(minutesLabel(sum.scheduled), '已排到某一天'), stat(minutesLabel(sum.unscheduled), '本周未定'), stat(minutesLabel(sum.recorded), '已记录'),
             sum.over ? stat(minutesLabel(sum.over), '计划超出可投入', 'over') : stat(sum.capacity != null ? minutesLabel(Math.max(0, sum.capacity - sum.planned)) : '—', sum.capacity != null ? '还能再安排' : '没有设可投入时间')))),
         h('div', { class: 'wk-days' }, days.map(dayColumn)),
@@ -2765,6 +2782,7 @@
     addFiles(e.dataTransfer.files);
   });
 
-  if (!state.messages.length && !state.settings.prefs.onboarded) change((s) => askOnboarding(s, 0));
-  else render();
+  const onboarding = window.TPlanOnboarding({ getState: () => state, commit, h, icon, toast });
+  render();
+  if (C.needsOnboarding(state)) onboarding.open(true);
 })();

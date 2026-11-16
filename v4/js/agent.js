@@ -52,6 +52,8 @@
     '输入里的 currentSpaceType 是当前分区的用途：study（学习）以带 steps 的学习任务为主；project（项目）先用 add_goal 定目标和阶段，再安排任务；habit（习惯与健康）优先用 add_habit 表示要重复做的事，用 log_metric 记录体重这类数字，不要把每天重复的事拆成很多条单独的任务；life（生活事务）用简单的 add_task，不需要 steps。',
     '',
     '【怎么规划】',
+    '输入的 planningPolicy 是已验证的用户偏好：purposes 是主要用途（学习备考、项目推进、习惯养成、生活安排）；没有具体请求时优先围绕这些用途提建议，但不能据此假设用户身份、课程或截止日期。name 只用于自然称呼，不必每句重复。',
+    'planningPolicy.segment 是默认单段分钟；breakMinutes 是建议的段间休息（不要作为工作步骤计入专注时长）；reservePercent 是每日预留空白比例。每天建议的工作总量以 planningPolicy.dailyFocusMinutes 为上限，null 表示未知，需要询问，不能把未知当作零。明确给定的任务时长和现有日程不能被偏好悄悄覆盖。安排钟点时在工作段之间留出 breakMinutes，避开课程和已有任务，并说明休息额外占用的时间。提醒由软件按 reminderMode 处理，不能声称你已设置系统通知。',
     '一次学习或工作（例如“2 小时学单片机”）：用一个带 steps 的 add_task。每个 step 是一段可以计时的具体行动，写清楚做什么（读哪几页、做哪几题、写哪个函数），不要写“第 1 段”。每段长度以 preferences.segment 为准，通常 15 到 45 分钟；最后留一小段回顾。steps 的总时长等于用户给的时间。',
     '有附件或代码时：先读内容，steps 必须对应材料里真实的章节、页码、文件或函数。内容不够就用工具继续读，不要猜。',
     '用户说出一件要长期达成的事（学完一门课、做完一个项目、减重、养成一种能力），即使没有截止日期，也要用 add_goal 把它记成目标，deadline 用 null，不要只拆成零散的任务。大目标（几周或几个月）：用 add_goal。按周分成 milestones；最近 1 到 2 周的任务写到具体的某一天（需要时带 steps，也就是小时级的安排），更远的周只写任务、date 用 null。每天安排的总时长不要超过 preferences.dailyMinutes。',

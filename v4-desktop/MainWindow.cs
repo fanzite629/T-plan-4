@@ -17,6 +17,8 @@ internal sealed class MainWindow : Form
     readonly HttpGateway gateway = new HttpGateway();
     readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 16000000 };
     readonly Timer watchdog = new Timer();
+    readonly NotifyIcon notice = new NotifyIcon();
+    int qaNotificationCount;
     TimerWindow mini;
     Dictionary<string, object> snapshot;
     bool closing;
@@ -27,9 +29,12 @@ internal sealed class MainWindow : Form
         Text = qa == null ? "T计划 v4" : "T计划 v4 · 自动验收（独立测试数据）";
         Size = new Size(1280, 860); MinimumSize = new Size(860, 600); StartPosition = FormStartPosition.CenterScreen;
         using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("icon")) Icon = new Icon(stream);
+        notice.Icon = Icon; notice.Text = "T计划 v4";
+        notice.BalloonTipClicked += delegate { Show(); WindowState = FormWindowState.Normal; Activate(); };
+        notice.BalloonTipClosed += delegate { notice.Visible = false; };
         web.Dock = DockStyle.Fill; Controls.Add(web); Shown += Initialize;
         FormClosing += delegate { closing = true; watchdog.Stop(); gateway.Dispose(); if (mini != null) { mini.Dispose(); mini = null; } };
-        FormClosed += delegate { watchdog.Dispose(); web.Dispose(); };
+        FormClosed += delegate { notice.Dispose(); watchdog.Dispose(); web.Dispose(); };
         watchdog.Interval = 45000;
         watchdog.Tick += delegate { Fail(new TimeoutException("页面自检超时")); };
     }
@@ -66,6 +71,7 @@ internal sealed class MainWindow : Form
             core.NavigationCompleted += async delegate(object s, CoreWebView2NavigationCompletedEventArgs e) {
                 if (!e.IsSuccess) { Fail(new IOException("页面加载失败：" + e.WebErrorStatus)); return; }
                 if (qa != null && !closing) {
+                    using (var reader = new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("qa-onboarding"))) await core.ExecuteScriptAsync(reader.ReadToEnd());
                     using (var reader = new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("qa-timetable"))) await core.ExecuteScriptAsync(reader.ReadToEnd());
                     using (var reader = new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("qa"))) await core.ExecuteScriptAsync(reader.ReadToEnd());
                 }
@@ -97,6 +103,30 @@ internal sealed class MainWindow : Form
                 object headers; data.TryGetValue("headers", out headers);
                 Reply(await gateway.Send(id, Value(data, "url"), Value(data, "method"), headers as Dictionary<string, object>, Value(data, "body")));
             } catch (Exception ex) { Reply(new { kind = "http-response", id = id, error = ex is InvalidOperationException ? ex.Message : "请求失败，请检查设置后重试。" }); }
+        } else if (kind == "notify") {
+            string title = Value(data, "title"), message = Value(data, "text");
+            if (title.Length == 0 || title.Length > 60 || message.Length == 0 || message.Length > 240) return;
+            if (qa != null) { qaNotificationCount++; }
+            else {
+                try {
+                    System.Media.SystemSounds.Asterisk.Play();
+                    notice.Visible = true;
+                    notice.ShowBalloonTip(5000, "T计划 · " + title, message, ToolTipIcon.None);
+                } catch { /* The page also displays a reminder if Windows notifications are unavailable. */ }
+            }
+        } else if (kind == "qa-resize" && qa != null) {
+            int width, height;
+            if (!Int32.TryParse(Value(data, "width"), out width) || !Int32.TryParse(Value(data, "height"), out height)) return;
+            Rectangle bounds = Screen.FromControl(this).WorkingArea;
+            Size = new Size(Math.Max(860, Math.Min(width, bounds.Width)), Math.Max(600, Math.Min(height, bounds.Height)));
+            Reply(new { kind = "qa-resize" });
+        } else if (kind == "qa-capture" && qa != null) {
+            string name = Value(data, "name");
+            if (!System.Text.RegularExpressions.Regex.IsMatch(name, "^[a-z0-9-]{1,50}$")) return;
+            using (var stream = File.Create(Path.Combine(qa, name + ".png"))) await web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
+            Reply(new { kind = "qa-capture", name = name });
+        } else if (kind == "qa-notification-count" && qa != null) {
+            Reply(new { kind = "qa-notification-count", count = qaNotificationCount });
         } else if (kind == "timer-state") {
             object raw; data.TryGetValue("view", out raw); snapshot = raw as Dictionary<string, object>;
             if (mini != null) { if (snapshot == null) mini.Hide(); else mini.UpdateView(snapshot); }
