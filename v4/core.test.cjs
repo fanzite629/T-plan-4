@@ -647,3 +647,31 @@ test('money: a line of chat becomes an entry only when it clearly is one', () =>
   const checked = C.validateActions(C.emptyState(), [{ type: 'log_money', kind: 'out', amount: 15, category: '餐饮', note: '奶茶' }, { type: 'log_money', kind: 'out', amount: 'some' }]);
   assert.deepEqual([checked.actions.length, checked.rejected.length, checked.actions[0].date], [1, 1, null]);
 });
+
+test('tags: cleaned, kept through normalize, read from a typed line', () => {
+  assert.deepStrictEqual(C.cleanTags('#考试, 作业  考试 ＃复习'), ['考试', '作业', '复习']);
+  assert.deepStrictEqual(C.cleanTags(['a', 'b', 'c', 'd', 'e', 'f', 'g']).length, 6);
+  const s = C.emptyState();
+  s.tasks.push({ id: 't1', title: 'x', date: null, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: 1, tags: ['#考试', '', '考试', 5] });
+  s.tasks.push({ id: 't2', title: 'y', date: null, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: 1, tags: [] });
+  const n = C.normalize(JSON.parse(JSON.stringify(s)));
+  assert.deepStrictEqual(n.tasks[0].tags, ['考试']);
+  assert.strictEqual('tags' in n.tasks[1], false);
+  const line = C.parseLine('明天 复习单片机 40分钟 #考试 #单片机', TODAY);
+  assert.deepStrictEqual(line.tags, ['考试', '单片机']);
+  assert.strictEqual(line.title, '复习单片机');
+});
+
+test('parseTaskLine picks a space by @name and reports defaults', () => {
+  const s = C.emptyState();
+  const r = C.parseTaskLine(s, '明天下午3点 复习单片机 40分钟 @学习 #考试', TODAY);
+  assert.strictEqual(r.task.spaceId, 'space_1');
+  assert.strictEqual(r.task.time, '15:00');
+  assert.strictEqual(r.minutesGiven, true);
+  const plain = C.parseTaskLine(s, '买洗衣液 @不存在', TODAY, 'space_4');
+  assert.strictEqual(plain.task.date, null);
+  assert.strictEqual(plain.task.spaceId, 'space_4');
+  assert.strictEqual(plain.unknownSpace, '不存在');
+  assert.strictEqual(plain.minutesGiven, false);
+  assert.ok(C.parseTaskLine(s, '#只有标签', TODAY).error);
+});

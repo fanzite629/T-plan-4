@@ -106,3 +106,17 @@ test('planning context includes scheduled course time blocks without API keys', 
   const context = C.buildContext(state, '2026-09-07', '安排学习', null);
   assert.equal(context.scheduledCourses.length, 2); assert.equal(context.scheduledCourses[0].startTime, '08:00');
 });
+
+test('fromLine reads a typed course line', () => {
+  const a = T.fromLine('自动控制原理 周四 1-2节 1-16周 @二东402 王老师', settings);
+  assert.equal(a.title, '自动控制原理'); assert.equal(a.weekday, 4); assert.equal(a.weeks, '1-16'); assert.equal(a.periods, '1-2');
+  assert.equal(a.room, '二东402'); assert.equal(a.teacher, '王老师');
+  assert.equal(T.resolve(a, settings).dates.length, 16);
+  const b = T.fromLine('电路实验 周五 3-4节 2-16双周', settings);
+  assert.equal(b.weeks, '2-16双'); assert.equal(T.resolve(b, settings).dates.length, 8);
+  const c = T.fromLine('大学物理 周三 10:00-11:35', settings);
+  assert.equal(c.weeks, '1-20'); assert.equal(c.weeksDefaulted, true); assert.equal(c.startTime, '10:00');
+  const d = T.fromLine('期中补课 2026-11-20 14:00-15:35 @二东602', settings);
+  assert.deepEqual(T.resolve(d, settings).dates, ['2026-11-20']);
+  assert.ok(T.resolve(T.fromLine('周四 1-2节', settings), settings).errors.includes('缺少课程名称'));
+});

@@ -102,6 +102,8 @@
       if (!spaceIds.has(t.spaceId)) t.spaceId = null;
       if (!goalIds.has(t.goalId)) t.goalId = null;
       if (!Array.isArray(t.steps) || !t.steps.length) delete t.steps;
+      const tags = cleanTags(t.tags);
+      if (tags.length) t.tags = tags; else delete t.tags;
       t.done = !!t.done;
     }
     for (const h of s.habits) {
@@ -143,6 +145,24 @@
     if (typeof value !== 'string') return '';
     return value.replace(/\s+/g, ' ').trim().slice(0, max);
   }
+  /* Tags are the user's own words for a task: short, no spaces, at most six, kept in the order written. */
+  const MAX_TAGS = 6;
+  function cleanTags(value) {
+    const parts = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[\s,，、;；]+/) : [];
+    const out = [];
+    for (const part of parts) {
+      const tag = typeof part === 'string' ? part.replace(/^[#＃]+/, '').replace(/[#＃\s.,，。;；:：!！?？"'“”‘’()（）[\]【】<>《》]/g, '').slice(0, 12) : '';
+      if (tag && !out.includes(tag)) out.push(tag);
+      if (out.length >= MAX_TAGS) break;
+    }
+    return out;
+  }
+  /* Pulls "#标签" words out of a line and returns what is left. */
+  function takeTags(text) {
+    const tags = [];
+    const rest = String(text || '').replace(/[#＃]([^\s#＃,，。;；、]{1,12})/g, (_, tag) => { tags.push(tag); return ' '; });
+    return { rest: rest.replace(/\s+/g, ' ').trim(), tags: cleanTags(tags) };
+  }
   function cleanMinutes(value, fallback, min = 1, max = 1440) {
     const n = Math.round(Number(value));
     return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
@@ -167,6 +187,8 @@
     if (!title) throw new Error(label + '缺少标题');
     const out = { title, date: validDate(a.date) ? a.date : null, minutes: cleanMinutes(a.minutes, 30), spaceId: pickSpace(state, a) };
     if (out.date && validTime(a.time)) out.time = a.time;
+    const tags = cleanTags(a.tags);
+    if (tags.length) out.tags = tags;
     if (Array.isArray(a.steps) && a.steps.length) {
       out.steps = a.steps.slice(0, MAX_STEPS).map((step) => {
         const stepTitle = cleanText(isObject(step) ? step.title : step, 100);
@@ -297,6 +319,7 @@
   function newTask(fields, now, origin, extra) {
     const task = { id: uid('t'), title: fields.title, date: fields.date, minutes: fields.minutes, spaceId: fields.spaceId, done: false, doneAt: null, createdAt: now, origin, ...extra };
     if (fields.time) task.time = fields.time;
+    if (fields.tags && fields.tags.length) task.tags = cleanTags(fields.tags);
     if (fields.steps) task.steps = fields.steps.map((x) => ({ title: x.title, minutes: x.minutes, done: false }));
     return task;
   }
@@ -1075,11 +1098,29 @@
     return { date: r.date || (r.time ? today : null), time: r.time, minutes: r.minutes, understood: !!(r.date || r.time || r.minutes) };
   }
   function parseLine(line, today) {
-    const r = readWhen(line, today);
+    const tagged = takeTags(line);
+    const r = readWhen(tagged.rest, today);
     const title = cleanText(r.rest.replace(/^[\s\-•·\d.、)]+/, '').replace(/[，,。；;]+$/, ''), 150);
     if (!title) return null;
     const minutes = r.minutes || 30;
-    return r.time ? { type: 'add_task', title, date: r.date || today, time: r.time, minutes, space: null } : { type: 'add_task', title, date: r.date, minutes, space: null };
+    const task = r.time ? { type: 'add_task', title, date: r.date || today, time: r.time, minutes, space: null } : { type: 'add_task', title, date: r.date, minutes, space: null };
+    if (tagged.tags.length) task.tags = tagged.tags;
+    return task;
+  }
+  /* One typed line in the quick-add box: "明天下午3点 复习单片机 40分钟 @学习 #考试".
+     "@名字" picks a space by name; "#词" adds a tag; the rest is read like a chat line. */
+  function parseTaskLine(state, line, today, fallbackSpaceId = null) {
+    let spaceId = fallbackSpaceId, spaceName = '', unknownSpace = '';
+    const text = String(line || '').replace(/[@＠]\s*([^\s@＠#＃]{1,20})/, (_, name) => {
+      const sp = state.spaces.find((x) => x.name === name) || state.spaces.find((x) => x.name.startsWith(name)) || state.spaces.find((x) => name.startsWith(x.name));
+      if (sp) { spaceId = sp.id; spaceName = sp.name; } else unknownSpace = name;
+      return ' ';
+    });
+    const parsed = parseLine(text, today);
+    if (!parsed) return { error: '没有读到要做的事，例如「明天 复习单片机 40分钟」' };
+    const task = { title: parsed.title, date: parsed.date, minutes: parsed.minutes, spaceId: state.spaces.some((x) => x.id === spaceId) ? spaceId : null, tags: parsed.tags || [] };
+    if (parsed.time) task.time = parsed.time;
+    return { task, minutesGiven: /\d+\s*(?:分钟|分|min|小时|h|个小时)/i.test(text) || /半小时/.test(text), spaceName, unknownSpace };
   }
 
   /* Evenly sized segments for one sitting, used when no model is connected. */
@@ -1125,6 +1166,6 @@
     clone, uid, todayISO, validDate, validTime, MONEY_CATEGORIES, addMoney, updateMoney, setMoneySettings, moneySummary, moneyCandles, moneyFlow, parseMoney, trajectory, addSession, updateSession, wrapUp, moveTask, setWeekPlan, weekSummary, isV3Export, convertV3, CARD_INTERVALS, newCard, dueCards, reviewCard, cardStats, upcomingDates, daysBetween, editTaskSteps, toggleTask, addDays, weekStart,
     emptyState, normalize, validateActions, resolveProposal, editProposal, addMemory,
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,
-    buildProfile, buildContext, history, parseLine, parseWhen, splitIntoSteps, localReply,
+    buildProfile, buildContext, history, parseLine, parseTaskLine, cleanTags, takeTags, parseWhen, splitIntoSteps, localReply,
   };
 });

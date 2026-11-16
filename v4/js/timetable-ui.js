@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const T = window.TPlanTimetable;
-  window.TPlanTimetableUI = function ({ getState, commit, toast, h, openWorkspace, openTask = () => {}, undoable = (label, apply) => apply(), courses: link = null }) {
+  window.TPlanTimetableUI = function ({ getState, commit, toast, h, openWorkspace, openTask = () => {}, undoable = (label, apply) => apply(), courses: link = null, compose = null }) {
     let currentWeek = T.weekStart(new Date().toLocaleDateString('sv-SE')), activeDraft = null, jobId = 0;
     const dialog = h('dialog', { class: 'tt-dialog', 'aria-label': '导入课表' });
     const schoolDialog = h('dialog', { class: 'tt-dialog tt-school', 'aria-label': '学期与节次设置' });
@@ -97,6 +97,11 @@
         const start = Math.floor(minute / 30) * 30, clock = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
         row.startTime = clock(start); row.endTime = clock(Math.min(1439, start + 90));
       }
+      if (compose) {
+        // The quick-add box gets the day, time and weeks already written; only the course name is left to type.
+        const words = [T.weekdayNames[weekdayNumber - 1], row.periods ? row.periods + '节' : row.startTime + '-' + row.endTime, row.weeks ? row.weeks + '周' : ''].filter(Boolean);
+        return compose(words.join(' ') + ' ');
+      }
       activeDraft = { rows: [row], reports: [], manual: true }; showPreview();
     }
     function render() {
@@ -147,7 +152,7 @@
       }
       const last = s.imports.at(-1);
       main.replaceChildren(...[h('header', { class: 'tt-header' }, h('div', {}, h('h2', {}, '课表'), h('p', { class: 'sub' }, '拖入课表，检查后自动填入每一天')),
-        h('div', { class: 'tt-actions' }, btn('学期与节次', () => settings()), link && s.courses.length ? btn('课程与分区', coursesDialog) : null, btn('手动添加', () => { activeDraft = { rows: [{ title: '', weekday: '', weeks: '', periods: '', selected: true }], reports: [], manual: true }; showPreview(); }), btn('导入课表', () => openImport(), 'dark'))),
+        h('div', { class: 'tt-actions' }, btn('学期与节次', () => settings()), link && s.courses.length ? btn('课程与分区', coursesDialog) : null, btn('手动添加', () => { if (compose) return compose(''); activeDraft = { rows: [{ title: '', weekday: '', weeks: '', periods: '', selected: true }], reports: [], manual: true }; showPreview(); }), btn('导入课表', () => openImport(), 'dark'))),
         h('div', { class: 'tt-week-nav' }, btn('‹ 上周', () => { currentWeek = T.addDays(currentWeek, -7); render(); }, 'ghost'), h('strong', {}, weekLabel), btn('下周 ›', () => { currentWeek = T.addDays(currentWeek, 7); render(); }, 'ghost'), btn('本周', () => { currentWeek = T.weekStart(today()); render(); }, 'ghost')),
         !s.courses.length ? h('div', { class: 'tt-empty' }, h('strong', {}, '把课表文件拖到这里'), h('p', {}, 'PDF · 截图 · Word（.docx）· Excel（.xlsx）'), h('p', { class: 'sub' }, '先保存学校节次时间；导入后可修正课程、检查周次与冲突。'), btn('选择课表文件', () => openImport())) : null,
         h('div', { class: 'tt-grid-scroll' }, h('div', { class: 'tt-grid' }, header, grid)),
