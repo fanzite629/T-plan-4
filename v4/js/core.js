@@ -65,7 +65,7 @@
       schedule: Timetable.empty(),
       settings: {
         agent: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', modelId: '', models: [], vision: null },
-        prefs: { segment: 25, dailyMinutes: null, bestTime: null, onboarded: false, timerCompact: false, listWidth: 320, name: '', remindMinutes: 10 },
+        prefs: { segment: 25, dailyMinutes: null, bestTime: null, onboarded: false, timerCompact: false, listWidth: 320, name: '', remindMinutes: 10, railCompact: false, railFolded: {} },
       },
     };
   }
@@ -84,6 +84,7 @@
     s.settings = { ...base.settings, ...(isObject(raw.settings) ? raw.settings : {}) };
     s.settings.agent = { ...base.settings.agent, ...(isObject(s.settings.agent) ? s.settings.agent : {}) };
     s.settings.prefs = { ...base.settings.prefs, ...(isObject(s.settings.prefs) ? s.settings.prefs : {}) };
+    if (!isObject(s.settings.prefs.railFolded)) s.settings.prefs.railFolded = {};
     // Spaces saved before types existed: the four built-in ones get their natural type, others the task-centred one.
     const builtIn = { space_1: 'study', space_2: 'project', space_3: 'habit', space_4: 'life' };
     for (const sp of s.spaces) if (!SPACE_TYPES.some((t) => t.id === sp.type)) sp.type = builtIn[sp.id] || 'study';
@@ -925,7 +926,7 @@
     if (sessions.length >= 5) {
       const blocks = {};
       for (const x of sessions) if (Number.isInteger(x.hour)) blocks[blockOf(x.hour)] = (blocks[blockOf(x.hour)] || 0) + x.actual;
-      profile.focusMinutesByTimeOfDay = blocks;
+      if (Object.keys(blocks).length) profile.focusMinutesByTimeOfDay = blocks; // manual records without a start time have no hour
     }
     const days = new Set(sessions.map((x) => x.date));
     if (days.size >= 3) profile.focusMinutesPerActiveDay = Math.round(sum(sessions, (x) => x.actual) / days.size);
@@ -949,7 +950,7 @@
     return {
       today,
       weekday: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(today + 'T12:00:00').getDay()],
-      preferences: state.settings.prefs,
+      preferences: (({ railCompact, railFolded, listWidth, timerCompact, ...rest }) => rest)(state.settings.prefs), // layout choices mean nothing to the model
       scheduledCourses: Timetable.events(state.schedule, today, addDays(today, 13)).map(e => ({ title: e.title, date: e.date, startTime: e.startTime, endTime: e.endTime, room: e.room })),
       profile: buildProfile(state, today),
       memory: state.memory.map((m) => m.text),
