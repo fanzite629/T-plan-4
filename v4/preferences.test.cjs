@@ -6,7 +6,7 @@ const values = { name: ' 测试昵称 ', purposes: ['project', 'habit'], segment
 
 test('fresh onboarding is shown, but old records and interview completion are never interrupted', () => {
   assert.equal(C.needsOnboarding(C.emptyState()), true);
-  for (const key of ['tasks', 'messages', 'sessions', 'dates', 'memory', 'goals', 'habits', 'reflections', 'cards', 'metrics']) {
+  for (const key of ['tasks', 'repeats', 'messages', 'sessions', 'dates', 'memory', 'goals', 'habits', 'reflections', 'cards', 'metrics']) {
     const s = C.emptyState(); s[key].push({ id: 'existing' }); assert.equal(C.needsOnboarding(s), false, key);
   }
   const s = C.emptyState(); s.settings.prefs.onboarded = true; assert.equal(C.needsOnboarding(s), false);
@@ -70,6 +70,22 @@ test('pace changes usable planning capacity, not existing schedules or explicit 
   const explicit = C.setWeekPlan(s, '2026-11-16', { capacity: 1000 });
   assert.equal(C.weekSummary(explicit, '2026-11-16').capacity, 1000);
   assert.equal(C.planningPreferences({ segment: 25, dailyMinutes: 120 }).dailyFocusMinutes, 120, 'old profile keeps its previous budget');
+});
+
+test('repeating tasks use selected duration and spreading respects reserved daily time', () => {
+  const s = C.savePreferences(C.emptyState(), values), today = '2026-11-16';
+  const parsed = C.parseTaskLine(s, '每天 阅读材料', today);
+  assert.equal(parsed.repeat.minutes, 37); assert.equal(parsed.minutesGiven, false);
+  const explicit = C.parseTaskLine(s, '每周四 阅读材料 四十分钟', today);
+  assert.equal(explicit.repeat.minutes, 40); assert.equal(explicit.minutesGiven, true);
+  const added = C.addRepeat(s, { title: '阅读材料', rule: { kind: 'daily', start: today } }, today);
+  assert.equal(added.tasks.length, 7); assert.ok(added.tasks.every(t => t.minutes === 37));
+  const changed = C.savePreferences(added, { ...values, segment: 15 });
+  assert.deepEqual(changed.tasks, added.tasks); assert.deepEqual(changed.repeats, added.repeats);
+  s.tasks.push(...['a', 'b'].map(id => ({ id, title: id, minutes: 50, date: '2026-11-15', done: false })));
+  const plan = C.spreadTasks(s, ['a', 'b'], today, { daily: C.planningPreferences(s.settings.prefs).dailyFocusMinutes });
+  assert.equal(plan.moves[0].to, today); assert.equal(plan.moves[1].to, '2026-11-17');
+  assert.ok(plan.days.every(day => day.daily === 78));
 });
 test('reminder modes gate sound, toast and native dispatch consistently', () => {
   const events = ['start', 'end', 'schedule'];

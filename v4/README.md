@@ -1,4 +1,4 @@
-# T计划 v4.1 Web frontend
+# T计划 v4.2 Web frontend
 
 中文项目介绍与运行方法见 [仓库首页](../README.md)，课表操作见 [课表导入指南](../docs/TIMETABLE.md)。
 
@@ -12,7 +12,7 @@ button for local files; arbitrary disk-path reading is not enabled in this versi
 
 ## Run
 
-For Windows, extract the complete desktop ZIP and launch `package-4.1/T计划 v4.exe`. It includes its
+For Windows, extract the complete desktop ZIP and launch `package-4.2/T计划 v4.exe`. It includes its
 WebView2 runtime, stores v4 data separately in `%LOCALAPPDATA%/TPlanV4`, and provides a native
 floating timer. Provider keys are encrypted with Windows DPAPI. See the desktop README for builds.
 

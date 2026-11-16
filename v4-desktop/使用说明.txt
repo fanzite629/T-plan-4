@@ -1,8 +1,8 @@
-T计划 v4.1.0 · Windows x64 免安装版（课表导入）
+T计划 v4.2.0 · Windows x64 免安装版（首次使用、偏好设置、重复任务与新版回看）
 
 开始使用
 1. 把 ZIP 完整解压到电脑上的文件夹，例如 D:\Apps\TPlanV4。
-2. 打开 package-4.1 文件夹，双击「T计划 v4.exe」。
+2. 打开 package-4.2 文件夹，双击「T计划 v4.exe」。
 3. 请保留同目录的 app、runtime、DLL 和许可证文件，不要单独移动 EXE。
 4. 不用安装 Node.js、Python，也不用启动网页服务器。
 
@@ -67,3 +67,16 @@ SmartScreen 说明：https://learn.microsoft.com/en-us/microsoft-edge/privacy-wh
 Microsoft、pdf.js 的许可证见 licenses 和 app/vendor/pdfjs/LICENSE。
 
 本软件是 v4 网页原型的桌面封装，仍应定期导出重要数据备份。
+
+升级方法
+关闭旧版后，把新版完整解压到新目录，再将桌面快捷方式指向新版 EXE。
+同一 Windows 用户下会继续读取原来的课表、任务和计时，不必重新导入。
+更新前可在「设置 → 数据」导出备份。模型密钥不随 JSON 导出，换电脑后重新填写。
+
+新版功能
+按 N 打开快速添加，输入「每周四 交实验报告 30分钟」或「每天晚上8点 阅读 20分钟」，预览后确认。
+重复任务提前生成未来 7 天；未开始的过期次数在下一次到来时清理，已开始的记录保留。
+工作台「今天的空闲」显示 08:00–22:00 之间至少 20 分钟的空档，可排入任务。
+「回看」可以切换本周、近 30 天和近 12 周，查看图表、分区时间和任务排行。
+侧栏头像组点击散开，组名旁箭头可切回一列。
+完整使用指南：https://github.com/fanzite629/T-plan-4/blob/main/docs/WINDOWS.md

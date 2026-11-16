@@ -55,7 +55,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\v4-desktop\build.ps1 `
   -OutputDirectory '.\v4-desktop\package-local' -Zip
 ```
 
-输出包含 EXE、SDK DLL、`app/` 页面、`runtime/` 完整运行时、`licenses/`、使用说明及 `SHA256SUMS.txt`。`-Zip` 额外生成 `v4-desktop/release/` 下的 ZIP 和 ZIP 自身 SHA-256 文件。默认解压顶层目录为 `package-4.1/`。
+输出包含 EXE、SDK DLL、`app/` 页面、`runtime/` 完整运行时、`licenses/`、使用说明及 `SHA256SUMS.txt`。`-Zip` 额外生成 `v4-desktop/release/` 下的 ZIP 和 ZIP 自身 SHA-256 文件。默认解压顶层目录为 `package-4.2/`。
 
 构建脚本会复制到指定输出目录；发布构建应使用新目录，避免旧输出中的残留文件进入压缩包。不要把输出目录设为源码根目录。构建不会清理或修改个人数据目录。
 
@@ -84,7 +84,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\v4-desktop\test-native.ps1
 
 ```powershell
 $testDir = Join-Path (Get-Location) ('v4-desktop\qa-output\ui-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
-$exe = Join-Path (Get-Location) 'v4-desktop\package-4.1\T计划 v4.exe'
+$exe = Join-Path (Get-Location) 'v4-desktop\package-4.2\T计划 v4.exe'
 $process = Start-Process -FilePath $exe -ArgumentList @('--self-test', ('"' + $testDir + '"')) -PassThru -Wait
 Get-Content -LiteralPath (Join-Path $testDir 'result.json')
 ```

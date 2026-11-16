@@ -1,7 +1,7 @@
 ﻿param(
     [string]$VendorRoot = (Join-Path $PSScriptRoot '..\desktop\vendor'),
     [switch]$Zip,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'package-4.1')
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'package-4.2')
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -34,7 +34,7 @@ $manifest = Get-ChildItem -LiteralPath $out -Recurse -File | Where-Object { $_.N
 if ($Zip) {
     $release = Join-Path $root 'release'
     New-Item -ItemType Directory -Force -Path $release | Out-Null
-    $archive = Join-Path $release ('TPlan-v4.1.0-Windows-x64-portable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.zip')
+    $archive = Join-Path $release ('TPlan-v4.2.0-Windows-x64-portable-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.zip')
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory($out, $archive, [IO.Compression.CompressionLevel]::Optimal, $true)
     Get-Item -LiteralPath $archive | Select-Object FullName,Length

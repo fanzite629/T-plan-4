@@ -50,6 +50,7 @@
       version: VERSION,
       spaces: names.map((name, i) => ({ id: 'space_' + (i + 1), name, color: SPACE_COLORS[i], type: SPACE_TYPES[i].id })),
       tasks: [],
+      repeats: [],
       habits: [],
       goals: [],
       sessions: [],
@@ -98,6 +99,14 @@
     const builtIn = { space_1: 'study', space_2: 'project', space_3: 'habit', space_4: 'life' };
     for (const sp of s.spaces) if (!SPACE_TYPES.some((t) => t.id === sp.type)) sp.type = builtIn[sp.id] || 'study';
     const spaceIds = new Set(s.spaces.map((x) => x.id));
+    s.repeats = (Array.isArray(raw.repeats) ? raw.repeats : []).map((r) => {
+      if (!isObject(r) || typeof r.id !== 'string' || !r.id) return null;
+      const title = cleanText(r.title, 150), rule = cleanRule(r.rule, todayISO());
+      if (!title || !rule) return null;
+      return { id: r.id, title, minutes: cleanMinutes(r.minutes, 30), spaceId: spaceIds.has(r.spaceId) ? r.spaceId : null, tags: cleanTags(r.tags), rule,
+        madeUntil: validDate(r.madeUntil) ? r.madeUntil : null, createdAt: Number(r.createdAt) || 0, ...(validTime(r.time) ? { time: r.time } : {}) };
+    }).filter(Boolean);
+    const repeatIds = new Set(s.repeats.map((r) => r.id));
     for (const m of s.metrics) {
       if (!Array.isArray(m.entries)) m.entries = [];
       if (!spaceIds.has(m.spaceId)) m.spaceId = null;
@@ -113,6 +122,7 @@
       if (!Array.isArray(t.steps) || !t.steps.length) delete t.steps;
       const tags = cleanTags(t.tags);
       if (tags.length) t.tags = tags; else delete t.tags;
+      if (!repeatIds.has(t.repeatId) || !validDate(t.repeatDate)) { delete t.repeatId; delete t.repeatDate; }
       t.done = !!t.done;
     }
     for (const h of s.habits) {
@@ -204,7 +214,7 @@
   }
   function needsOnboarding(state) {
     if (state.settings.prefs.welcomeVersion === 1 || state.settings.prefs.onboarded || state.timer) return false;
-    return !['tasks', 'habits', 'goals', 'sessions', 'messages', 'memory', 'reflections', 'metrics', 'dates', 'cards'].some(key => state[key].length)
+    return !['tasks', 'repeats', 'habits', 'goals', 'sessions', 'messages', 'memory', 'reflections', 'metrics', 'dates', 'cards'].some(key => state[key].length)
       && !state.schedule.courses.length && !state.money.entries.length && !Object.keys(state.weekPlans).length;
   }
   function savePreferences(state, values, skip = false) {
@@ -650,8 +660,80 @@
     const name = (key) => (key ? state.spaces.find((sp) => sp.id === key).name : '未分区');
     const axes = keys.map((key) => ({ id: key || null, name: name(key), recent: recent[key] || 0, previous: previous[key] || 0 }));
     if (other) axes.push({ id: 'other', name: '其他 ' + other.length + ' 个分区', recent: sum(other, (key) => recent[key] || 0), previous: sum(other, (key) => previous[key] || 0) });
-    return { heat, weeks, balance: axes.length >= 3 ? { axes, recentTotal: sum(axes, (a) => a.recent), previousTotal: sum(axes, (a) => a.previous) } : null,
+    // The same comparison by tag, read from each record's task. A record counts toward every tag of its
+    // task, so tags overlap and their shares can add up to more than the whole.
+    let tags = null;
+    if (state.tasks.some((t) => t.tags && t.tags.length)) {
+      const taskTags = new Map(state.tasks.map((t) => [t.id, t.tags || []]));
+      const tagsOf = (x) => taskTags.get(x.taskId) || [];
+      const within = (from, to) => state.sessions.filter((x) => x.date >= from && x.date <= to);
+      const rs = within(addDays(today, -27), today), ps = within(addDays(today, -55), addDays(today, -28));
+      const count = (list) => {
+        const out = {};
+        for (const x of list) { const own = tagsOf(x); if (!own.length) out[''] = (out[''] || 0) + x.actual; for (const tag of own) out[tag] = (out[tag] || 0) + x.actual; }
+        return out;
+      };
+      const rc = count(rs), pc = count(ps);
+      const both = (k) => (rc[k] || 0) + (pc[k] || 0);
+      let named = [...new Set([...Object.keys(rc), ...Object.keys(pc)])].filter((k) => k && both(k) > 0).sort((a, b) => both(b) - both(a) || a.localeCompare(b));
+      let rest = [];
+      if (named.length > 6) { rest = named.slice(5); named = named.slice(0, 5); }
+      const restSet = new Set(rest);
+      const once = (list) => sum(list.filter((x) => tagsOf(x).some((tag) => restSet.has(tag))), (x) => x.actual); // each record once, however many of these tags it has
+      const tagAxes = named.map((tag) => ({ id: tag, tag, name: '#' + tag, recent: rc[tag] || 0, previous: pc[tag] || 0 }));
+      if (rest.length) tagAxes.push({ id: 'other', name: '其他 ' + rest.length + ' 个标签', recent: once(rs), previous: once(ps) });
+      if (both('')) tagAxes.push({ id: 'none', name: '没有标签', recent: rc[''] || 0, previous: pc[''] || 0 });
+      if (tagAxes.length) tags = { axes: tagAxes, recentTotal: sum(rs, (x) => x.actual), previousTotal: sum(ps, (x) => x.actual), overlap: [...rs, ...ps].some((x) => tagsOf(x).length > 1) };
+    }
+    return { heat, weeks, tags, balance: axes.length >= 3 ? { axes, recentTotal: sum(axes, (a) => a.recent), previousTotal: sum(axes, (a) => a.previous) } : null,
       recordedDays: Object.keys(perDay).filter((d) => d >= heatStart && d <= today && perDay[d] > 0).length };
+  }
+
+  /* ---------- the recap of one period: totals, the busiest weekday and hour, where the time went ----------
+     Facts only. `series` is one entry per day, or per week when `bucket` is 'week'. `previous` is the
+     recorded time of the equally long period just before, for comparison. */
+  function reviewSummary(state, from, to, { bucket = 'day' } = {}) {
+    const inRange = (d) => d >= from && d <= to;
+    const sessions = state.sessions.filter((x) => inRange(x.date));
+    const length = daysBetween(from, to) + 1;
+    const days = Array.from({ length }, (_, i) => addDays(from, i));
+    const perDay = {}, donePerDay = {};
+    for (const x of sessions) perDay[x.date] = (perDay[x.date] || 0) + x.actual;
+    const done = state.tasks.filter((t) => t.done && t.doneAt && inRange(todayISO(new Date(t.doneAt))));
+    for (const t of done) { const d = todayISO(new Date(t.doneAt)); donePerDay[d] = (donePerDay[d] || 0) + 1; }
+    const step = bucket === 'week' ? 7 : 1;
+    const series = [];
+    for (let i = 0; i < days.length; i += step) {
+      const part = days.slice(i, i + step);
+      series.push({ from: part[0], to: part[part.length - 1], minutes: sum(part, (d) => perDay[d] || 0), done: sum(part, (d) => donePerDay[d] || 0) });
+    }
+    const byWeekday = Array(7).fill(0); // Monday first
+    for (const d of days) byWeekday[isoWeekday(d) - 1] += perDay[d] || 0;
+    const byHour = {};
+    for (const x of sessions) if (Number.isInteger(x.hour)) byHour[x.hour] = (byHour[x.hour] || 0) + x.actual;
+    const peak = Object.entries(byHour).sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
+    const total = sum(sessions, (x) => x.actual);
+    const taskOf = new Map(state.tasks.map((t) => [t.id, t]));
+    const rank = new Map();
+    for (const x of sessions) {
+      const task = taskOf.get(x.taskId);
+      const key = task ? task.id : 'title:' + (x.title || '');
+      const row = rank.get(key) || { taskId: task ? task.id : null, title: task ? task.title : x.title || '没有标题的记录', spaceId: state.spaces.some((sp) => sp.id === x.spaceId) ? x.spaceId : null, minutes: 0, sessions: 0 };
+      row.minutes += x.actual; row.sessions++;
+      rank.set(key, row);
+    }
+    const tasks = [...rank.values()].sort((a, b) => b.minutes - a.minutes || a.title.localeCompare(b.title));
+    const areas = [...state.spaces.map((sp) => ({ id: sp.id, name: sp.name, color: sp.color })), { id: null, name: '未分区', color: null }]
+      .map((a) => { const mine = tasks.filter((t) => t.spaceId === a.id); return { ...a, minutes: sum(mine, (t) => t.minutes), tasks: mine.slice(0, 3).map((t) => t.title) }; })
+      .filter((a) => a.minutes > 0).sort((a, b) => b.minutes - a.minutes);
+    const best = days.reduce((b, d) => ((perDay[d] || 0) > b.minutes ? { date: d, minutes: perDay[d] } : b), { date: null, minutes: 0 });
+    const top = Math.max(...byWeekday);
+    return {
+      from, to, length, total, sessions: sessions.length, activeDays: days.filter((d) => perDay[d] > 0).length, done: done.length,
+      previous: sum(state.sessions.filter((x) => x.date >= addDays(from, -length) && x.date < from), (x) => x.actual),
+      series, byWeekday, bestWeekday: top > 0 ? byWeekday.indexOf(top) : null, bestDay: best.date ? best : null,
+      peakHour: peak ? { hour: Number(peak[0]), minutes: peak[1] } : null, areas, tasks: tasks.slice(0, 8),
+    };
   }
 
   /* ---------- reading a T计划 v3 export ----------
@@ -1163,7 +1245,8 @@
     return task;
   }
   /* One typed line in the quick-add box: "明天下午3点 复习单片机 40分钟 @学习 #考试".
-     "@名字" picks a space by name; "#词" adds a tag; the rest is read like a chat line. */
+     "@名字" picks a space by name; "#词" adds a tag; the rest is read like a chat line.
+     A line that starts with a repeat phrase ("每周四 交实验报告") becomes a repeat rule instead. */
   function parseTaskLine(state, line, today, fallbackSpaceId = null) {
     let spaceId = fallbackSpaceId, spaceName = '', unknownSpace = '';
     const text = String(line || '').replace(/[@＠]\s*([^\s@＠#＃]{1,20})/, (_, name) => {
@@ -1171,13 +1254,285 @@
       if (sp) { spaceId = sp.id; spaceName = sp.name; } else unknownSpace = name;
       return ' ';
     });
+    if (!state.spaces.some((x) => x.id === spaceId)) spaceId = null;
+    const repeat = takeRepeat(text, today);
+    if (repeat && repeat.error) return { error: repeat.error };
+    if (repeat) {
+      const tagged = takeTags(repeat.rest);
+      const r = readWhen(tagged.rest, today);
+      const title = cleanText(r.rest.replace(/^[\s\-•·\d.、)]+/, '').replace(/[，,。；;]+$/, ''), 150);
+      if (!title) return { error: '没有读到要做的事，例如「每周四 交实验报告」' };
+      const rule = repeat.ruleRaw;
+      if (r.date && !repeat.startGiven) rule.start = r.date; // a date written beside the rule is where it starts
+      const clean = cleanRule(rule, today);
+      if (!clean) return { error: '重复规则不完整，例如「每周四」「每天」「每隔一天」' };
+      return { repeat: { title, minutes: r.minutes || planningPreferences(state.settings.prefs).segment, spaceId, tags: tagged.tags, rule: clean, ...(r.time ? { time: r.time } : {}) }, minutesGiven: r.minutes !== null, spaceName, unknownSpace };
+    }
     const parsed = parseLine(text, today);
     if (!parsed) return { error: '没有读到要做的事，例如「明天 复习单片机 40分钟」' };
     const minutesGiven = readWhen(takeTags(text).rest, today).minutes !== null;
     if (!minutesGiven) parsed.minutes = planningPreferences(state.settings.prefs).segment;
-    const task = { title: parsed.title, date: parsed.date, minutes: parsed.minutes, spaceId: state.spaces.some((x) => x.id === spaceId) ? spaceId : null, tags: parsed.tags || [] };
+    const task = { title: parsed.title, date: parsed.date, minutes: parsed.minutes, spaceId, tags: parsed.tags || [] };
     if (parsed.time) task.time = parsed.time;
     return { task, minutesGiven, spaceName, unknownSpace };
+  }
+
+  /* ---------- repeating tasks ----------
+     A rule ("每周四", "每天", "每隔一天", "每月1号") makes ordinary tasks for the coming week, one per
+     occurrence, so the timer, the lists and the week page treat them like any other task. Each
+     instance carries `repeatId` and the `repeatDate` it was made for. A rule only ever makes dates
+     after the last one it made, so a deleted instance does not come back. An instance that was never
+     started gives way when the next occurrence arrives, so a missed daily task does not pile up. */
+  const REPEAT_KINDS = ['daily', 'weekly', 'interval', 'monthly'];
+  const REPEAT_AHEAD = 6; // today and the six days after it
+  const CN_WEEKDAY = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7, 天: 7 };
+  const isoWeekday = (date) => ((new Date(date + 'T12:00:00').getDay() + 6) % 7) + 1;
+  const monthLength = (date) => new Date(Number(date.slice(0, 4)), Number(date.slice(5, 7)), 0).getDate();
+  function cleanRule(raw, today) {
+    if (!isObject(raw) || !REPEAT_KINDS.includes(raw.kind)) return null;
+    const rule = { kind: raw.kind, start: validDate(raw.start) ? raw.start : today };
+    if (raw.kind === 'weekly') {
+      const days = [...new Set((Array.isArray(raw.days) ? raw.days : []).map(Number).filter((d) => Number.isInteger(d) && d >= 1 && d <= 7))].sort((a, b) => a - b);
+      if (!days.length) return null;
+      rule.days = days;
+      rule.every = Number(raw.every) === 2 ? 2 : 1;
+    } else if (raw.kind === 'interval') {
+      const every = Math.round(Number(raw.every));
+      if (!(every >= 2 && every <= 365)) return null;
+      rule.every = every;
+    } else if (raw.kind === 'monthly') {
+      const day = Math.round(Number(raw.day));
+      if (!(day >= 1 && day <= 31)) return null;
+      rule.day = day;
+    }
+    if (validDate(raw.until) && raw.until >= rule.start) rule.until = raw.until;
+    return rule;
+  }
+  function occursOn(rule, date) {
+    if (date < rule.start || (rule.until && date > rule.until)) return false;
+    if (rule.kind === 'daily') return true;
+    if (rule.kind === 'interval') return daysBetween(rule.start, date) % rule.every === 0;
+    if (rule.kind === 'monthly') return Number(date.slice(8)) === Math.min(rule.day, monthLength(date));
+    if (!rule.days.includes(isoWeekday(date))) return false;
+    return rule.every === 1 || (Math.round(daysBetween(weekStart(rule.start), weekStart(date)) / 7) % 2 === 0);
+  }
+  function nextOccurrences(rule, from, count = 3) {
+    const out = [];
+    let d = from < rule.start ? rule.start : from;
+    for (let i = 0; i < 800 && out.length < count; i++, d = addDays(d, 1)) {
+      if (rule.until && d > rule.until) break;
+      if (occursOn(rule, d)) out.push(d);
+    }
+    return out;
+  }
+  function repeatLabel(rule) {
+    if (!rule) return '';
+    const names = '一二三四五六日';
+    const days = rule.days ? rule.days.join() : '';
+    const text = rule.kind === 'daily' ? '每天'
+      : rule.kind === 'interval' ? '每 ' + rule.every + ' 天一次'
+        : rule.kind === 'monthly' ? '每月 ' + rule.day + ' 号' + (rule.day > 28 ? '（没有这一天的月份取最后一天）' : '')
+          : rule.every === 1 && days === '1,2,3,4,5' ? '工作日'
+            : rule.every === 1 && days === '6,7' ? '每个周末'
+              : rule.every === 1 && rule.days.length === 7 ? '每天'
+                : (rule.every === 2 ? '每两周的' : '每') + '周' + rule.days.map((d) => names[d - 1]).join('、');
+    return text + (rule.until ? '，到 ' + Number(rule.until.slice(5, 7)) + '月' + Number(rule.until.slice(8)) + '日' : '');
+  }
+  /* Reads a repeat phrase out of a line: null when there is none, { error } when there is one that
+     cannot be used, otherwise the rule and what is left. "每隔N天" is read literally, N days in between,
+     so "每隔一天" is every second day; the quick-add card shows the next dates so this can be checked. */
+  function takeRepeat(text, today) {
+    let rest = String(text || '');
+    const cut = (re, fn, keep = ' ') => {
+      const m = rest.match(re);
+      if (!m || fn(m) === false) return false;
+      rest = rest.replace(m[0], typeof keep === 'function' ? keep(m) : keep);
+      return true;
+    };
+    let start = null, until = null, rule = null;
+    cut(/从\s*([^\s，,。]{1,12}?)\s*(?:开始|起)/, (m) => { const w = readWhen(m[1], today); if (!w.date) return false; start = w.date; });
+    cut(/(?:一直)?(?:直到|到|截止到?)\s*(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}[日号]?|\d{1,2}月\d{1,2}[日号]?|\d{1,2}\/\d{1,2})\s*(?:为止|结束)?/, (m) => { const w = readWhen(m[1], today); if (!w.date) return false; until = w.date; });
+    const days = (s) => [...s].map((ch) => CN_WEEKDAY[ch]).filter(Boolean);
+    const found = cut(new RegExp('每隔\\s*' + NUM + '\\s*天'), (m) => { const k = cnNumber(m[1]); if (!Number.isInteger(k) || k < 1 || k > 364) return false; rule = { kind: 'interval', every: k + 1 }; })
+      || cut(new RegExp('每\\s*' + NUM + '\\s*天'), (m) => { const k = cnNumber(m[1]); if (!Number.isInteger(k) || k < 1 || k > 365) return false; rule = k === 1 ? { kind: 'daily' } : { kind: 'interval', every: k }; })
+      || cut(/每(?:天)?(晚上?|早上?)/, () => { rule = { kind: 'daily' }; }, (m) => ' ' + (m[1][0] === '晚' ? '晚上' : '早上'))
+      || cut(/每(?:一)?天|每日|天天/, () => { rule = { kind: 'daily' }; })
+      || cut(/每个?月\s*(\d{1,2}|[一二三四五六七八九十]{1,3})\s*[号日]/, (m) => { const d = cnNumber(m[1]); if (!Number.isInteger(d) || d < 1 || d > 31) return false; rule = { kind: 'monthly', day: d }; })
+      || cut(/每个?周末/, () => { rule = { kind: 'weekly', days: [6, 7], every: 1 }; })
+      || cut(/(?:每个?)?工作日(?!志)(?:每天)?/, () => { rule = { kind: 'weekly', days: [1, 2, 3, 4, 5], every: 1 }; })
+      || cut(/(?:每(两|二|2)?个?|(隔))(?:周|星期|礼拜)的?\s*([一二三四五六日])\s*(?:到|至|-|—|~)\s*(?:周|星期|礼拜)?([一二三四五六日])/, (m) => {
+        const a = CN_WEEKDAY[m[3]], b = CN_WEEKDAY[m[4]];
+        if (!(a < b)) return false;
+        rule = { kind: 'weekly', days: Array.from({ length: b - a + 1 }, (_, i) => a + i), every: m[1] || m[2] ? 2 : 1 };
+      })
+      || cut(/(?:每(两|二|2)?个?|(隔))(?:周|星期|礼拜)的?\s*((?:(?:周|星期|礼拜)?[一二三四五六日天](?:\s*[、,，和及与跟]\s*)?)+)/, (m) => {
+        const list = days(m[3].replace(/星期|礼拜/g, '').replace(/周/g, ''));
+        if (!list.length) return false;
+        rule = { kind: 'weekly', days: list, every: m[1] || m[2] ? 2 : 1 };
+      });
+    if (!found) {
+      if (/每(?:两|二|2)?个?(?:周|星期|礼拜)/.test(rest)) return { error: '每周哪几天？例如「每周一三五」「每周四」。按次数打卡（每周 3 次）请用习惯。' };
+      if (/每个?月/.test(rest)) return { error: '每月几号？例如「每月1号」。' };
+      return null;
+    }
+    return { ruleRaw: { ...rule, start: start || today, ...(until ? { until } : {}) }, startGiven: !!start, rest: rest.replace(/\s+/g, ' ').trim() };
+  }
+  function repeatFields(state, f, today) {
+    const title = cleanText(f.title, 150);
+    if (!title) throw new Error('重复任务缺少内容');
+    const rule = cleanRule(f.rule, today);
+    if (!rule) throw new Error('重复规则不完整，例如「每周四」「每天」「每隔一天」');
+    const out = { title, minutes: cleanMinutes(f.minutes, planningPreferences(state.settings.prefs).segment), spaceId: state.spaces.some((x) => x.id === f.spaceId) ? f.spaceId : null, tags: cleanTags(f.tags), rule };
+    if (validTime(f.time)) out.time = f.time;
+    return out;
+  }
+  const untouchedInstance = (s, t) => !t.done && t.date === t.repeatDate && !t.next && !(t.steps && t.steps.some((x) => x.done))
+    && !s.sessions.some((x) => x.taskId === t.id) && !(s.timer && s.timer.taskId === t.id);
+  function materializeRepeats(state, today, now = Date.now()) {
+    const s = clone(state);
+    const end = addDays(today, REPEAT_AHEAD);
+    let added = 0, removed = 0, changed = false;
+    for (const r of s.repeats) {
+      const have = new Set(s.tasks.filter((t) => t.repeatId === r.id).map((t) => t.repeatDate));
+      let d = [today, r.rule.start, r.madeUntil ? addDays(r.madeUntil, 1) : today].sort().pop();
+      for (; d <= end && (!r.rule.until || d <= r.rule.until); d = addDays(d, 1)) {
+        if (!occursOn(r.rule, d) || have.has(d)) continue;
+        s.tasks.push({ id: uid('t'), title: r.title, date: d, minutes: r.minutes, spaceId: r.spaceId, done: false, doneAt: null, createdAt: now, origin: 'repeat', repeatId: r.id, repeatDate: d,
+          ...(r.time ? { time: r.time } : {}), ...(r.tags.length ? { tags: [...r.tags] } : {}) });
+        added++;
+      }
+      if (!r.madeUntil || r.madeUntil < end) { r.madeUntil = end; changed = true; }
+      const arrived = s.tasks.filter((t) => t.repeatId === r.id && t.repeatDate <= today).map((t) => t.repeatDate).sort().pop();
+      if (arrived) {
+        const before = s.tasks.length;
+        s.tasks = s.tasks.filter((t) => !(t.repeatId === r.id && t.repeatDate < arrived && untouchedInstance(s, t)));
+        removed += before - s.tasks.length;
+      }
+    }
+    return { state: s, added, removed, changed: changed || added > 0 || removed > 0 };
+  }
+  function addRepeat(state, f, today, now = Date.now()) {
+    const s = clone(state);
+    s.repeats.push({ id: uid('r'), ...repeatFields(s, f, today), madeUntil: null, createdAt: now });
+    return materializeRepeats(s, today, now).state;
+  }
+  /* A changed rule replaces its instances from today on that were never started; started or finished ones stay. */
+  function updateRepeat(state, id, f, today, now = Date.now()) {
+    const s = clone(state);
+    const r = s.repeats.find((x) => x.id === id);
+    if (!r) throw new Error('这个重复任务已经不存在');
+    const fields = repeatFields(s, f, today);
+    delete r.time;
+    Object.assign(r, fields, { madeUntil: addDays(today, -1) });
+    s.tasks = s.tasks.filter((t) => !(t.repeatId === id && t.repeatDate >= today && untouchedInstance(s, t)));
+    return materializeRepeats(s, today, now).state;
+  }
+  /* Stopping removes the instances from today on that were never started; the rest become plain tasks. */
+  function stopRepeat(state, id, today) {
+    const s = clone(state);
+    s.tasks = s.tasks.filter((t) => !(t.repeatId === id && t.repeatDate >= today && untouchedInstance(s, t)));
+    s.repeats = s.repeats.filter((r) => r.id !== id);
+    for (const t of s.tasks) if (t.repeatId === id) { delete t.repeatId; delete t.repeatDate; }
+    return s;
+  }
+
+  /* ---------- quick add: exam and deadline dates, and money ----------
+     "操作系统期末考试 12月20日 9:00 @二东402": "@" is the place. A course or space named in the title
+     files the date under that space. */
+  function parseDateLine(state, line, today, fallbackSpaceId = null) {
+    let place = '';
+    const text = String(line || '').replace(/[@＠]\s*([^\s@＠]{1,40})/, (_, p) => { place = p; return ' '; });
+    const r = readWhen(text, today);
+    const title = cleanText(r.rest.replace(/^[\s,，;；]+|[\s,，;；。]+$/g, ''), 80);
+    if (!title) return { error: '没有读到是什么事，例如「操作系统期末考试 12月20日」' };
+    if (!r.date) return { error: '没有读到日期，例如「12月20日」「下周五」「明天」', title };
+    if (r.date < today) return { error: '这个日期已经过去了', title };
+    const sp = state.spaces.find((x) => x.course && title.includes(x.course)) || state.spaces.find((x) => x.name.length >= 2 && title.includes(x.name));
+    const spaceId = sp ? sp.id : state.spaces.some((x) => x.id === fallbackSpaceId) ? fallbackSpaceId : null;
+    return { item: { title, date: r.date, place: cleanText(place, 40), spaceId, ...(r.time ? { time: r.time } : {}) }, spaceFromTitle: !!sp, daysLeft: daysBetween(today, r.date) };
+  }
+  /* In the money box a bare "奶茶 15" is spending; "+", 收到, 生活费 and similar words make it income,
+     and 忍住没买 puts it in the piggy bank. */
+  function parseMoneyLine(line, today) {
+    const text = String(line || '').trim();
+    let r = parseMoney(text, today);
+    if (!r) {
+      const income = /^[+＋]/.test(text) || /生活费|工资|奖学金|助学金|红包|退款|兼职|家教|收到|到账/.test(text);
+      r = parseMoney((income ? '收入 ' : '花了 ') + text.replace(/^[+＋\-－]\s*/, ''), today);
+    }
+    if (!r) return { error: '没有读到金额，例如「奶茶 15」「收到生活费 1500」' };
+    return { entry: { kind: r.kind, amount: r.amount, category: r.category, note: r.note, date: r.date || today } };
+  }
+
+  /* ---------- free time in a day, and spreading late tasks over the coming days ---------- */
+  const clockMinutes = (s) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3));
+  const clockText = (m) => pad(Math.floor(m / 60)) + ':' + pad(m % 60);
+  /* Classes and unfinished tasks with a start time are busy; the gaps between them inside the window
+     (8:00–22:00 unless given) are free. With `now`, only the part of the day still ahead counts. */
+  function freeSlots(state, date, { now = null, from = '08:00', to = '22:00', min = 20 } = {}) {
+    const windowStart = clockMinutes(from), windowEnd = clockMinutes(to);
+    const start = now === null ? windowStart : Math.max(windowStart, Math.ceil(now / 5) * 5);
+    const busy = [
+      ...Timetable.events(state.schedule, date, date).map((e) => ({ kind: 'class', title: e.title, start: clockMinutes(e.startTime), end: clockMinutes(e.endTime) })),
+      ...state.tasks.filter((t) => t.date === date && t.time && !t.done).map((t) => ({ kind: 'task', id: t.id, title: t.title, start: clockMinutes(t.time), end: Math.min(1440, clockMinutes(t.time) + t.minutes) })),
+    ].filter((b) => b.end > b.start).sort((a, b) => a.start - b.start || a.end - b.end);
+    const gaps = [];
+    let cursor = start;
+    for (const b of busy) {
+      if (cursor >= windowEnd) break;
+      if (b.end <= cursor) continue;
+      if (b.start > cursor) gaps.push({ start: cursor, end: Math.min(b.start, windowEnd) });
+      cursor = Math.max(cursor, b.end);
+    }
+    if (cursor < windowEnd) gaps.push({ start: cursor, end: windowEnd });
+    const slots = gaps.filter((g) => g.end - g.start >= min).map((g) => ({ start: clockText(g.start), end: clockText(g.end), minutes: g.end - g.start }));
+    return { from, to, windowStart, windowEnd, start, busy, slots, free: sum(slots, (x) => x.minutes) };
+  }
+  /* Puts the given tasks on the earliest days that still have room, over the next `horizon` days.
+     Room is the daily amount the user can arrange minus what is already planned that day; today is
+     also limited by the free time left in it. Tasks of a space with a close exam or deadline go first,
+     then the ones that have waited longest. A task that fits nowhere goes to the day with most room
+     and is marked `over`; a task whose space has an exam or deadline coming is kept to the days before
+     it. Nothing is written; this returns a plan to show first. */
+  function spreadTasks(state, ids, today, { daily = 120, todayFree = null, horizon = 14 } = {}) {
+    const moving = new Set(ids);
+    const tasks = state.tasks.filter((t) => moving.has(t.id) && !t.done);
+    const days = Array.from({ length: horizon }, (_, i) => addDays(today, i));
+    const planned = days.map((d) => sum(state.tasks.filter((t) => t.date === d && !t.done && !moving.has(t.id)), (t) => t.minutes));
+    const room = planned.map((p) => Math.max(0, daily - p));
+    if (todayFree !== null) {
+      const untimed = sum(state.tasks.filter((t) => t.date === today && !t.done && !t.time && !moving.has(t.id)), (t) => t.minutes);
+      room[0] = Math.min(room[0], Math.max(0, todayFree - untimed));
+    }
+    const soon = (t) => { const d = t.spaceId ? upcomingDates(state, today, t.spaceId)[0] : null; return d ? d.daysLeft : 9999; }; // only a date in the task's own space counts
+    const order = [...tasks].sort((a, b) => soon(a) - soon(b) || (a.date || '').localeCompare(b.date || '') || a.createdAt - b.createdAt);
+    const added = days.map(() => 0);
+    const moves = order.map((t) => {
+      // Work for an upcoming exam or deadline belongs before it: only the days up to the day before count,
+      // even when that overfills one of them.
+      const due = soon(t);
+      const last = due >= 1 && due < horizon ? due - 1 : due === 0 ? 0 : horizon - 1;
+      const window = room.slice(0, last + 1);
+      let i = window.findIndex((r) => r >= t.minutes);
+      const over = i < 0;
+      if (over) i = window.indexOf(Math.max(...window));
+      room[i] -= t.minutes;
+      added[i] += t.minutes;
+      return { taskId: t.id, title: t.title, minutes: t.minutes, from: t.date, to: days[i], over, deadlineIn: soon(t) === 9999 ? null : soon(t) };
+    });
+    return { moves, days: days.map((d, i) => ({ date: d, planned: planned[i], added: added[i], daily })).filter((x) => x.added) };
+  }
+  /* Moves tasks to the planned days. A start time is dropped, since the old one may clash on the new day. */
+  function applySpread(state, moves) {
+    const s = clone(state);
+    for (const m of moves) {
+      const t = s.tasks.find((x) => x.id === m.taskId);
+      if (!t || t.done) continue;
+      t.date = m.to;
+      delete t.time;
+      delete t.week;
+    }
+    return s;
   }
 
   /* Evenly sized segments for one sitting, used when no model is connected. */
@@ -1226,6 +1581,8 @@
     clone, uid, todayISO, validDate, validTime, MONEY_CATEGORIES, addMoney, updateMoney, setMoneySettings, moneySummary, moneyCandles, moneyFlow, parseMoney, trajectory, addSession, updateSession, wrapUp, moveTask, setWeekPlan, weekSummary, isV3Export, convertV3, CARD_INTERVALS, newCard, dueCards, reviewCard, cardStats, upcomingDates, daysBetween, editTaskSteps, toggleTask, addDays, weekStart,
     emptyState, normalize, validateActions, resolveProposal, editProposal, addMemory,
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,
-    buildProfile, buildContext, history, parseLine, parseTaskLine, cleanTags, takeTags, parseWhen, splitIntoSteps, localReply,
+    buildProfile, buildContext, history, parseLine, parseTaskLine, cleanTags, takeTags, parseWhen,
+    REPEAT_AHEAD, takeRepeat, cleanRule, occursOn, nextOccurrences, repeatLabel, materializeRepeats, addRepeat, updateRepeat, stopRepeat,
+    parseDateLine, parseMoneyLine, freeSlots, spreadTasks, applySpread, reviewSummary, splitIntoSteps, localReply,
   };
 });

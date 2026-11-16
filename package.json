@@ -1,6 +1,6 @@
 {
   "name": "t-plan-4",
-  "version": "4.1.0",
+  "version": "4.2.0",
   "private": true,
   "description": "T计划 v4 — local planner, timetable import and Windows portable desktop source",
   "scripts": {
