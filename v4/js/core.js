@@ -66,7 +66,7 @@
       schedule: Timetable.empty(),
       settings: {
         agent: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', modelId: '', models: [], vision: null },
-        prefs: { segment: 25, dailyMinutes: null, bestTime: null, onboarded: false, timerCompact: false, listWidth: 320, name: '', remindMinutes: 10, railCompact: false, railFolded: {} },
+        prefs: { segment: 25, dailyMinutes: null, bestTime: null, onboarded: false, timerCompact: false, listWidth: 320, name: '', remindMinutes: 10, railCompact: false, railFolded: {}, homeHidden: [], homeOrder: [] },
       },
     };
   }
@@ -86,6 +86,7 @@
     s.settings.agent = { ...base.settings.agent, ...(isObject(s.settings.agent) ? s.settings.agent : {}) };
     s.settings.prefs = { ...base.settings.prefs, ...(isObject(s.settings.prefs) ? s.settings.prefs : {}) };
     if (!isObject(s.settings.prefs.railFolded)) s.settings.prefs.railFolded = {};
+    for (const key of ['homeHidden', 'homeOrder']) s.settings.prefs[key] = Array.isArray(s.settings.prefs[key]) ? s.settings.prefs[key].filter((x) => typeof x === 'string').slice(0, 30) : [];
     // Spaces saved before types existed: the four built-in ones get their natural type, others the task-centred one.
     const builtIn = { space_1: 'study', space_2: 'project', space_3: 'habit', space_4: 'life' };
     for (const sp of s.spaces) if (!SPACE_TYPES.some((t) => t.id === sp.type)) sp.type = builtIn[sp.id] || 'study';
@@ -114,6 +115,9 @@
       const tags = cleanTags(t.tags);
       if (tags.length) t.tags = tags; else delete t.tags;
       if (!repeatIds.has(t.repeatId) || !validDate(t.repeatDate)) { delete t.repeatId; delete t.repeatDate; }
+      const note = cardText(t.note, 1000);
+      if (note) t.note = note; else delete t.note;
+      if (!(Number.isInteger(t.estimate) && t.estimate >= 1 && t.estimate <= 1440)) delete t.estimate;
       t.done = !!t.done;
     }
     for (const h of s.habits) {
@@ -246,6 +250,7 @@
         if (a.date !== undefined) out.date = validDate(a.date) ? a.date : null;
         if (a.minutes !== undefined) out.minutes = cleanMinutes(a.minutes, t.minutes);
         if (a.time !== undefined) out.time = validTime(a.time) ? a.time : null;
+        if (a.tags !== undefined) out.tags = cleanTags(a.tags);
         if (Object.keys(out).length === 2) throw new Error('修改任务时没有给出新内容');
         return out;
       }
@@ -253,6 +258,16 @@
         return { type: 'complete_task', taskId: existing(a.taskId).id };
       case 'delete_task':
         return { type: 'delete_task', taskId: existing(a.taskId).id };
+      case 'add_repeat': {
+        const title = cleanText(a.title, 150);
+        if (!title) throw new Error('重复任务缺少内容');
+        // A proposal is checked again when it is confirmed, and by then it carries the rule itself.
+        const read = isObject(a.rule) ? { ruleRaw: a.rule } : takeRepeat(typeof a.repeat === 'string' ? a.repeat : '', todayISO());
+        if (!read || read.error) throw new Error('重复任务的 repeat 要写成「每天」「每周四」「每周一三五」「工作日」「每隔一天」「每月1号」这样');
+        const rule = cleanRule({ ...read.ruleRaw, ...(validDate(a.start) ? { start: a.start } : {}), ...(validDate(a.until) ? { until: a.until } : {}) }, todayISO());
+        if (!rule) throw new Error('重复规则不完整');
+        return { type: 'add_repeat', title, minutes: cleanMinutes(a.minutes, 30), spaceId: pickSpace(state, a), tags: cleanTags(a.tags), rule, ...(validTime(a.time) ? { time: a.time } : {}) };
+      }
       case 'add_habit': {
         const title = cleanText(a.title, 80);
         if (!title) throw new Error('习惯缺少名称');
@@ -343,12 +358,17 @@
       const t = s.tasks.find((x) => x.id === a.taskId);
       for (const key of ['title', 'date', 'minutes', 'time']) if (a[key] !== undefined) t[key] = a[key];
       if (!t.date || !t.time) delete t.time;
+      if (a.tags !== undefined) { if (a.tags.length) t.tags = a.tags; else delete t.tags; }
     } else if (a.type === 'complete_task') {
       const t = s.tasks.find((x) => x.id === a.taskId);
       if (!t.done) { t.done = true; t.doneAt = now; }
     } else if (a.type === 'delete_task') {
       s.tasks = s.tasks.filter((x) => x.id !== a.taskId);
       if (s.timer && s.timer.taskId === a.taskId) s.timer = null;
+    } else if (a.type === 'add_repeat') {
+      s.repeats.push({ id: uid('r'), title: a.title, minutes: a.minutes, spaceId: a.spaceId, tags: a.tags, rule: a.rule, madeUntil: null, createdAt: now, ...(a.time ? { time: a.time } : {}) });
+      const made = materializeRepeats(s, todayISO(new Date(now)), now).state;
+      s.tasks = made.tasks; s.repeats = made.repeats;
     } else if (a.type === 'add_habit') {
       s.habits.push({ id: uid('h'), title: a.title, perWeek: a.perWeek, spaceId: a.spaceId, log: {}, createdAt: now });
     } else if (a.type === 'add_goal') {
@@ -962,6 +982,7 @@
     if (!s.timer) return s;
     const task = s.tasks.find((t) => t.id === s.timer.taskId);
     const step = task.steps[s.timer.step];
+    if (!task.estimate) task.estimate = task.minutes; // what was planned before any time was added, kept for comparing with what it really took
     step.minutes = Math.min(180, step.minutes + minutes);
     task.minutes = sum(task.steps, (x) => x.minutes);
     return s;
@@ -1055,7 +1076,7 @@
     return {
       today,
       weekday: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(today + 'T12:00:00').getDay()],
-      preferences: (({ railCompact, railFolded, listWidth, timerCompact, ...rest }) => rest)(state.settings.prefs), // layout choices mean nothing to the model
+      preferences: (({ railCompact, railFolded, listWidth, timerCompact, homeHidden, homeOrder, ...rest }) => rest)(state.settings.prefs), // layout choices mean nothing to the model
       scheduledCourses: Timetable.events(state.schedule, today, addDays(today, 13)).map(e => ({ title: e.title, date: e.date, startTime: e.startTime, endTime: e.endTime, room: e.room })),
       profile: buildProfile(state, today),
       memory: state.memory.map((m) => m.text),
@@ -1069,12 +1090,14 @@
         return { title: g.title, deadline: g.deadline, milestones: g.milestones.map((m) => m.title), tasksDone: tasks.filter((t) => t.done).length, tasksTotal: tasks.length };
       }),
       openTasks: state.tasks.filter((t) => !t.done).slice(0, 200).map((t) => ({
-        taskId: t.id, title: t.title, date: t.date, ...(t.time ? { time: t.time } : {}), ...(t.week ? { undatedInWeekOf: t.week } : {}), ...(t.next ? { continueFrom: t.next } : {}), minutes: t.minutes, space: spaceName(t.spaceId),
+        taskId: t.id, title: t.title, date: t.date, ...(t.time ? { time: t.time } : {}), ...(t.week ? { undatedInWeekOf: t.week } : {}), ...(t.next ? { continueFrom: t.next } : {}), minutes: t.minutes, space: spaceName(t.spaceId), ...(t.tags ? { tags: t.tags } : {}), ...(t.repeatId ? { fromRepeat: true } : {}), ...(t.note ? { note: t.note.slice(0, 200) } : {}),
         ...(t.steps ? { stepsDone: t.steps.filter((x) => x.done).length, stepsTotal: t.steps.length } : {}),
       })),
       recentlyDone: state.tasks.filter((t) => t.done && t.doneAt && toDay(t.doneAt) >= recentCutoff).slice(-60).map((t) => ({
         title: t.title, doneOn: toDay(t.doneAt), minutes: t.minutes, space: spaceName(t.spaceId), feel: t.feel || null,
       })),
+      repeatingTasks: state.repeats.map((r) => ({ title: r.title, repeat: repeatLabel(r.rule), ...(r.time ? { time: r.time } : {}), minutes: r.minutes, space: spaceName(r.spaceId), ...(r.tags.length ? { tags: r.tags } : {}) })),
+      tagsInUse: [...new Set(state.tasks.flatMap((t) => t.tags || []))].slice(0, 40),
       habits: state.habits.map((h) => ({ title: h.title, targetPerWeek: h.perWeek, doneThisWeek: habitWeekCount(h, today), doneToday: !!h.log[today] })),
       recentReflections: state.reflections.slice(-5).map((r) => ({ date: r.date, text: r.text.slice(0, 600) })),
       keyDates: upcomingDates(state, today).slice(0, 12).map((d) => ({ title: d.title, date: d.date, ...(d.time ? { time: d.time } : {}), daysLeft: d.daysLeft, kind: d.kind === 'goal' ? 'goalDeadline' : 'examOrDeadline', space: spaceName(d.spaceId) })),
@@ -1309,7 +1332,7 @@
         if (!(a < b)) return false;
         rule = { kind: 'weekly', days: Array.from({ length: b - a + 1 }, (_, i) => a + i), every: m[1] || m[2] ? 2 : 1 };
       })
-      || cut(/(?:每(两|二|2)?个?|(隔))(?:周|星期|礼拜)的?\s*((?:(?:周|星期|礼拜)?[一二三四五六日天](?:\s*[、,，和及与跟]\s*)?)+)/, (m) => {
+      || cut(/(?:每(两|二|2)?个?|(隔))(?:周|星期|礼拜)的?\s*((?:(?:周|星期|礼拜)?[一二三四五六日天](?:\s*[、,，和及与跟]\s*)?)+)(?!\s*[次回遍])/, (m) => { // "每周三次" is a count, not Wednesday
         const list = days(m[3].replace(/星期|礼拜/g, '').replace(/周/g, ''));
         if (!list.length) return false;
         rule = { kind: 'weekly', days: list, every: m[1] || m[2] ? 2 : 1 };
@@ -1378,6 +1401,46 @@
     s.repeats = s.repeats.filter((r) => r.id !== id);
     for (const t of s.tasks) if (t.repeatId === id) { delete t.repeatId; delete t.repeatDate; }
     return s;
+  }
+
+  /* ---------- tags across all tasks ----------
+     Renaming to a name that is already in use merges the two. Both reach the repeat rules as well. */
+  function renameTag(state, from, to) {
+    const next = cleanTags([to])[0];
+    if (!next) throw new Error('新的标签名不能为空');
+    const s = clone(state);
+    const swap = (tags) => cleanTags(tags.map((tag) => (tag === from ? next : tag)));
+    for (const t of s.tasks) if (t.tags && t.tags.includes(from)) t.tags = swap(t.tags);
+    for (const r of s.repeats) if (r.tags.includes(from)) r.tags = swap(r.tags);
+    return s;
+  }
+  function deleteTag(state, tag) {
+    const s = clone(state);
+    for (const t of s.tasks) if (t.tags && t.tags.includes(tag)) { t.tags = t.tags.filter((x) => x !== tag); if (!t.tags.length) delete t.tags; }
+    for (const r of s.repeats) r.tags = r.tags.filter((x) => x !== tag);
+    return s;
+  }
+
+  /* ---------- how long things really take ----------
+     For finished tasks that were timed: recorded time over the time first planned. The middle value
+     of those ratios is used, so one runaway task does not decide it. A space answers for itself once
+     it has five such tasks; otherwise all spaces together; with fewer than five in all, nothing. */
+  const ESTIMATE_MIN_TASKS = 5;
+  function estimateFactor(state, spaceId = null) {
+    const timed = {};
+    for (const x of state.sessions) if (x.taskId && !x.manual) timed[x.taskId] = (timed[x.taskId] || 0) + x.actual;
+    const rows = state.tasks.filter((t) => t.done && timed[t.id]).map((t) => ({ spaceId: t.spaceId || null, ratio: timed[t.id] / (t.estimate || t.minutes) })).filter((x) => x.ratio > 0.1 && x.ratio < 10);
+    const own = spaceId ? rows.filter((x) => x.spaceId === spaceId) : [];
+    const used = own.length >= ESTIMATE_MIN_TASKS ? own : rows;
+    if (used.length < ESTIMATE_MIN_TASKS) return null;
+    return { factor: Math.round(median(used.map((x) => x.ratio)) * 100) / 100, tasks: used.length, scope: used === own ? 'space' : 'all' };
+  }
+  /* The suggested length for a planned one, or null when the records agree with the plan closely enough. */
+  function suggestMinutes(state, minutes, spaceId = null) {
+    const e = estimateFactor(state, spaceId);
+    if (!e || (e.factor > 0.8 && e.factor < 1.2)) return null;
+    const suggested = Math.min(1440, Math.max(5, Math.round((minutes * e.factor) / 5) * 5));
+    return Math.abs(suggested - minutes) >= 5 ? { ...e, minutes: suggested } : null;
   }
 
   /* ---------- quick add: exam and deadline dates, and money ----------
@@ -1524,6 +1587,6 @@
     habitWeekCount, timerElapsed, timerView, startTimer, pauseTimer, resumeTimer, extendTimer, finishStep, stopTimer,
     buildProfile, buildContext, history, parseLine, parseTaskLine, cleanTags, takeTags, parseWhen,
     REPEAT_AHEAD, takeRepeat, cleanRule, occursOn, nextOccurrences, repeatLabel, materializeRepeats, addRepeat, updateRepeat, stopRepeat,
-    parseDateLine, parseMoneyLine, freeSlots, spreadTasks, applySpread, reviewSummary, splitIntoSteps, localReply,
+    parseDateLine, parseMoneyLine, freeSlots, spreadTasks, applySpread, reviewSummary, renameTag, deleteTag, estimateFactor, suggestMinutes, splitIntoSteps, localReply,
   };
 });

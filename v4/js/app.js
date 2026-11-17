@@ -18,7 +18,7 @@
     if (key) platform.saveKey(state.settings.agent.provider, key, state.settings.agent.provider);
   } catch { /* keys stay as they were */ }
   const ui = { panelSection: 'model', mode: state.settings.prefs.onboarded ? 'home' : 'planner', // the first-run interview happens in the chat
-     space: null, tag: null, tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0, search: '', abort: null };
+     space: null, tag: null, selecting: false, selected: new Set(), tabs: {}, busy: false, busyText: '', draft: '', attachments: [], parsing: 0, search: '', abort: null };
   const library = new Map(); // files read during this session, by name; kept out of saved state because they are large
   let pip = null; // floating timer window, when open
   let dueNotified = null;
@@ -93,6 +93,8 @@
     stop: 'M7 7h10v10H7z',
     search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm5-2 4 4',
     edit: 'M4 20h4L19 9l-4-4L4 16v4Zm10-14 4 4',
+    cal: 'M5 6h14v14H5zM5 10.500h14M9 4v4M15 4v4',
+    sliders: 'M4 7h10M18 7h2M4 17h4M12 17h8M16 5v4M10 15v4',
     chev: 'M7 10l5 5 5-5',
     repeat: 'M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4',
     clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-13v4.5l3 2',
@@ -398,7 +400,8 @@
       return h('button', { class: 'cat-chip' + (on ? ' on' : ''), 'aria-pressed': String(on), title: tag ? '只看带「#' + tag + '」的任务' : '不按标签筛选',
         onclick: () => { ui.tag = on ? null : tag; render(); } }, h('i', { style: 'background:' + color }), label, n ? h('small', {}, String(n)) : null);
     };
-    return h('div', { class: 'cat-chips', role: 'toolbar', 'aria-label': '按标签筛选' }, chip(null, '全部', 'var(--ink)'), tags.map(([tag, n]) => chip(tag, '#' + tag, tagColor(tag), n)));
+    return h('div', { class: 'cat-chips', role: 'toolbar', 'aria-label': '按标签筛选' }, chip(null, '全部', 'var(--ink)'), tags.map(([tag, n]) => chip(tag, '#' + tag, tagColor(tag), n)),
+      h('button', { class: 'cat-chip ghost', title: '改名、合并或删除标签', onclick: openTagManager }, icon('edit'), '管理'));
   }
   const tagList = (tags) => (tags || []).map((tag) => h('span', { class: 'utag', style: '--tag:' + tagColor(tag) }, '#' + tag));
   const byWhen = (a, b) => a.done - b.done || (a.date || '9999').localeCompare(b.date || '9999') || (a.time || '99:99').localeCompare(b.time || '99:99') || a.createdAt - b.createdAt;
@@ -450,17 +453,87 @@
   }
   const stepLines = (steps) => h('ol', { class: 'steps' }, steps.map((x, i) => h('li', { class: x.done ? 'done' : '' },
     h('span', { class: 'num' }, i + 1 + '.'), h('span', { class: 'step-title' }, x.title), h('span', { class: 'sub' }, x.minutes + ' 分'))));
-  function taskRow(t) {
+  /* ---------- moving tasks without opening them, one at a time or several together ---------- */
+  let rowMenu = null; // the task whose "move to" choices are showing
+  const whenChoices = () => { const t = today(); return [['今天', { date: t }], ['明天', { date: C.addDays(t, 1) }], ['后天', { date: C.addDays(t, 2) }], ['下周一', { date: C.addDays(C.weekStart(t), 7) }], ['不定日期', {}]]; };
+  function moveTasks(ids, target, label) {
+    try {
+      let next = state;
+      for (const id of ids) next = C.moveTask(next, id, target);
+      return undoable(ids.length > 1 ? ids.length + ' 项已改到' + label : '已改到' + label, () => commit(next));
+    } catch (error) { toast(error.message); return false; }
+  }
+  const endSelecting = () => { ui.selecting = false; ui.selected.clear(); };
+  function batchBar(shownIds) {
+    const ids = [...ui.selected].filter((id) => state.tasks.some((t) => t.id === id));
+    const n = ids.length;
+    const act = (label, run, cls) => h('button', { class: 'cat-chip' + (cls ? ' ' + cls : ''), disabled: !n, onclick: run }, label);
+    return h('div', { class: 'batch-bar', role: 'toolbar', 'aria-label': '对选中的任务操作' },
+      h('div', { class: 'batch-head' }, h('strong', {}, n ? '已选 ' + n + ' 项' : '点任务来选择'),
+        h('button', { class: 'text-btn', onclick: () => { const all = shownIds.every((id) => ui.selected.has(id)); for (const id of shownIds) { if (all) ui.selected.delete(id); else ui.selected.add(id); } render(); } }, shownIds.length && shownIds.every((id) => ui.selected.has(id)) ? '全不选' : '全选'),
+        h('button', { class: 'text-btn', onclick: () => { endSelecting(); render(); } }, '退出多选')),
+      h('div', { class: 'cat-chips' },
+        whenChoices().map(([label, target]) => act(label, () => { if (moveTasks(ids, target, label)) { endSelecting(); render(); } })),
+        act('加标签…', () => openBatchTagDialog(ids)),
+        act('完成', () => {
+          let next = state;
+          for (const id of ids) { const t = next.tasks.find((x) => x.id === id); if (t && !t.done && !(next.timer && next.timer.taskId === id)) next = C.toggleTask(next, id, Date.now()).state; }
+          if (undoable(n + ' 项已标为完成', () => commit(next))) { endSelecting(); render(); }
+        }),
+        act('删除', () => { if (undoable(n + ' 项已删除', () => change((s) => { s.tasks = s.tasks.filter((x) => !ids.includes(x.id)); if (s.timer && ids.includes(s.timer.taskId)) s.timer = null; }))) { endSelecting(); render(); } }, 'danger')));
+  }
+  function openBatchTagDialog(ids) {
+    const known = tagsInUse(() => true).map(([tag]) => tag);
+    const box = h('input', { name: 'tags', maxLength: 90, placeholder: '例如 考试 作业（用空格分开）' });
+    const form = openDialog('给 ' + ids.length + ' 项加标签', [
+      h('label', { class: 'field' }, h('span', {}, '加上这些标签（原有的标签保留，每个任务最多 6 个）'), box,
+        h('div', { class: 'tag-suggest' }, known.slice(0, 14).map((tag) => h('button', { type: 'button', class: 'utag', style: '--tag:' + tagColor(tag), onclick: () => { box.value = [...C.cleanTags(box.value), tag].join(' '); } }, '+ #' + tag)))),
+    ], [h('span', { class: 'grow' }), cancelButton(), h('button', { class: 'btn dark', onclick: () => {
+      const add = C.cleanTags(form.tags.value);
+      if (!add.length) return toast('请写至少一个标签');
+      if (undoable(ids.length + ' 项已加上 ' + add.map((x) => '#' + x).join(' '), () => change((s) => { for (const t of s.tasks) if (ids.includes(t.id)) t.tags = C.cleanTags([...(t.tags || []), ...add]); }))) { closeDialog(); endSelecting(); render(); }
+    } }, '加上')]);
+    box.focus();
+  }
+  /* Every tag in one place: rename (a name already in use merges the two) or remove from all tasks. */
+  function openTagManager() {
+    const counts = new Map();
+    for (const t of state.tasks) for (const tag of t.tags || []) counts.set(tag, (counts.get(tag) || 0) + 1);
+    for (const r of state.repeats) for (const tag of r.tags) if (!counts.has(tag)) counts.set(tag, 0);
+    const tags = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'));
+    const rows = tags.map(([tag, n]) => {
+      const box = h('input', { value: tag, maxLength: 12, 'aria-label': '「' + tag + '」的新名字', onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); rename(); } } });
+      const rename = () => {
+        const to = C.cleanTags([box.value])[0];
+        if (!to) return toast('标签名不能为空');
+        if (to === tag) return;
+        const merging = counts.has(to);
+        try { const next = C.renameTag(state, tag, to); if (undoable(merging ? '#' + tag + ' 已并入 #' + to : '#' + tag + ' 已改名为 #' + to, () => commit(next))) { if (ui.tag === tag) ui.tag = to; render(); openTagManager(); } }
+        catch (error) { toast(error.message); }
+      };
+      return h('div', { class: 'tagm-row' }, h('span', { class: 'utag', style: '--tag:' + tagColor(tag) }, '#' + tag), h('small', {}, n + ' 个任务'), box,
+        h('button', { type: 'button', class: 'btn outline slim', onclick: rename }, '改名'),
+        h('button', { type: 'button', class: 'icon-btn small', 'aria-label': '从所有任务上去掉 #' + tag, title: '从所有任务上去掉这个标签', onclick: () => { if (undoable('#' + tag + ' 已从 ' + n + ' 个任务上去掉', () => commit(C.deleteTag(state, tag)))) { render(); openTagManager(); } } }, icon('trash')));
+    });
+    openDialog('管理标签', [
+      rows.length ? h('div', { class: 'tagm-list' }, rows) : h('p', { class: 'empty' }, '还没有标签。'),
+      h('p', { class: 'sub' }, '改名会改到所有任务和重复任务上。改成一个已有的名字，两个标签就合并成一个。删除只是把标签去掉，任务还在。都可以撤销。'),
+    ], [h('span', { class: 'grow' }), h('button', { type: 'button', class: 'btn dark', onclick: closeDialog }, '好')]);
+  }
+  const noteLinks = (text) => [...new Set(String(text || '').match(/https?:\/\/[^\s<>"'，。；、）)】]+/g) || [])].slice(0, 8);
+  function taskRow(t, opts) {
     const sp = space(t.spaceId);
     const overdue = !t.done && t.date && t.date < today();
     const timing = state.timer && state.timer.taskId === t.id;
     const stepsDone = t.steps ? t.steps.filter((x) => x.done).length : 0;
-    const row = h('div', { class: 'task' + (t.done ? ' done' : '') + (timing ? ' timing' : '') },
-      h('button', {
-        class: 'check', 'aria-label': t.done ? '标记为未完成' : '标记为完成', 'aria-pressed': String(t.done),
-        onclick: () => toggleDone(t.id),
-      }, t.done ? icon('check') : null),
-      h('button', { class: 'task-body', onclick: () => openTaskDialog(t) },
+    const selecting = !!(opts && opts.list) && ui.selecting;
+    const picked = selecting && ui.selected.has(t.id);
+    const pick = () => { if (picked) ui.selected.delete(t.id); else ui.selected.add(t.id); render(); };
+    const menuOpen = !selecting && rowMenu === t.id && !t.done;
+    const row = h('div', { class: 'task' + (t.done ? ' done' : '') + (timing ? ' timing' : '') + (picked ? ' picked' : '') },
+      selecting ? h('button', { class: 'check select' + (picked ? ' on' : ''), role: 'checkbox', 'aria-checked': String(picked), 'aria-label': '选择：' + t.title, onclick: pick }, picked ? icon('check') : null)
+        : h('button', { class: 'check', 'aria-label': t.done ? '标记为未完成' : '标记为完成', 'aria-pressed': String(t.done), onclick: () => toggleDone(t.id) }, t.done ? icon('check') : null),
+      h('button', { class: 'task-body', onclick: selecting ? pick : () => openTaskDialog(t) },
         h('span', { class: 'task-title' }, t.title),
         t.next && !t.done ? h('span', { class: 'task-next' }, '继续：' + t.next) : null,
         h('span', { class: 'task-meta' },
@@ -469,15 +542,20 @@
           h('span', { class: overdue ? 'overdue' : '' }, overdue ? '已过期 · ' + whenLabel(t) : whenLabel(t)),
           h('span', {}, '· ' + minutesLabel(t.minutes)),
           t.repeatId ? h('span', { class: 'task-repeat', title: '重复任务：' + C.repeatLabel((state.repeats.find((r) => r.id === t.repeatId) || {}).rule) }, icon('repeat')) : null,
+          t.note ? h('span', { class: 'task-repeat', title: '备注：' + t.note.slice(0, 200) }, icon('note')) : null,
           t.steps ? h('span', {}, '· ' + stepsDone + '/' + t.steps.length + ' 段') : null),
         t.tags ? h('span', { class: 'task-tags' }, tagList(t.tags)) : null),
-      !t.done && !state.timer ? h('button', { class: 'play', 'aria-label': '开始计时：' + t.title, title: '开始计时', onclick: () => beginTimer(t.id) }, icon('play')) : null);
+      !selecting && !t.done ? h('button', { class: 'play move' + (menuOpen ? ' on' : ''), 'aria-label': '改日期：' + t.title, 'aria-expanded': String(menuOpen), title: '改到哪一天', onclick: () => { rowMenu = menuOpen ? null : t.id; render(); } }, icon('cal')) : null,
+      !selecting && !t.done && !state.timer ? h('button', { class: 'play', 'aria-label': '开始计时：' + t.title, title: '开始计时', onclick: () => beginTimer(t.id) }, icon('play')) : null);
     fill(row, t.id, t.done ? 1 : t.steps ? stepsDone / t.steps.length : 0, sp && sp.color);
-    if (!t.steps || t.steps.length < 2) return row;
-    const next = t.steps.find((x) => !x.done);
-    return h('div', { class: 'with-tray' }, row,
+    const next = t.steps && t.steps.length >= 2 ? t.steps.find((x) => !x.done) : null;
+    const base = !t.steps || t.steps.length < 2 ? row : h('div', { class: 'with-tray' }, row,
       tray('task:' + t.id, next ? '下一段：' + next.title + ' · ' + next.minutes + ' 分' : '全部 ' + t.steps.length + ' 段已完成', stepLines(t.steps)));
+    if (!menuOpen) return base;
+    return h('div', { class: 'task-wrap' }, base, h('div', { class: 'task-move', role: 'group', 'aria-label': '把「' + t.title + '」改到' },
+      h('small', {}, '改到'), whenChoices().map(([label, target]) => h('button', { class: 'cat-chip', disabled: (target.date || null) === (t.date || null) && !t.week, onclick: () => { rowMenu = null; moveTasks([t.id], target, label); } }, label))));
   }
+  const listRow = (t) => taskRow(t, { list: true });
   function habitRow(habit) {
     const t = today();
     const count = C.habitWeekCount(habit, t);
@@ -504,7 +582,7 @@
       h('div', { class: 'goal-head' },
         h('strong', {}, goal.title),
         h('button', { class: 'icon-btn small', 'aria-label': '删除目标', title: '删除目标', onclick: () => {
-          if (confirm('删除目标「' + goal.title + '」？它的任务会保留。')) undoable('目标已删除', () => commit(C.normalize({ ...C.clone(state), goals: state.goals.filter((g) => g.id !== goal.id) })));
+          undoable('目标已删除，它的任务保留着', () => commit(C.normalize({ ...C.clone(state), goals: state.goals.filter((g) => g.id !== goal.id) })));
         } }, icon('trash'))),
       h('span', { class: 'task-meta' }, (goal.deadline ? '截止 ' + plainDate(goal.deadline) + ' · ' : '') + done + ' / ' + tasks.length + ' 项完成'));
     fill(card, goal.id, tasks.length ? done / tasks.length : 0, (space(goal.spaceId) || {}).color);
@@ -640,7 +718,7 @@
           h('strong', { class: 'metric-value' }, latest ? latest.value + unit : '还没有记录')),
         line,
         h('button', { class: 'icon-btn small', 'aria-label': '删除记录项 ' + metric.name, title: '删除这个记录项', onclick: () => {
-          if (confirm('删除「' + metric.name + '」和它的全部 ' + entries.length + ' 条记录？')) undoable('记录项已删除', () => change((s) => { s.metrics = s.metrics.filter((m) => m.id !== metric.id); }));
+          undoable('「' + metric.name + '」和 ' + entries.length + ' 条记录已删除', () => change((s) => { s.metrics = s.metrics.filter((m) => m.id !== metric.id); }));
         } }, icon('trash'))),
       delta !== null ? h('span', { class: 'sub' }, '从 ' + plainDate(entries[0].date) + ' 的 ' + entries[0].value + unit + ' 到现在：' + (delta > 0 ? '+' : '') + delta + unit + '，共 ' + entries.length + ' 次记录') : null,
       h('div', { class: 'row tight' }, input, h('button', { class: 'btn outline slim', onclick: log }, '记录')));
@@ -682,10 +760,12 @@
     const emptyText = { today: '今天还没有安排。告诉助手你想做什么，或者拖一份课件进来。', week: '本周后面几天还没有安排。', later: '没有以后的任务或未定日期的任务。', todo: '没有待办的事。在上面写一件，按回车就加进来。', done: '还没有完成的事。' };
     let body;
     const query = ui.search.trim().toLowerCase();
+    let shownTasks = []; // what the multi-select bar can act on
     if (query) {
       const tagQuery = query.replace(/^[#＃]/, '');
-      const found = state.tasks.filter((x) => inSpace(x) && inTag(x) && (x.title.toLowerCase().includes(query) || (x.tags || []).some((tag) => tag.toLowerCase().includes(tagQuery)))).sort(byWhen).slice(0, 80);
-      body = [h('h3', { class: 'group-title' }, '搜索到 ' + found.length + ' 项' + (current ? '（只在这个分区里）' : '')), found.length ? found.map(taskRow) : h('p', { class: 'empty' }, '没有标题里包含「' + ui.search.trim() + '」的任务。')];
+      const found = state.tasks.filter((x) => inSpace(x) && inTag(x) && (x.title.toLowerCase().includes(query) || (x.note || '').toLowerCase().includes(query) || (x.tags || []).some((tag) => tag.toLowerCase().includes(tagQuery)))).sort(byWhen).slice(0, 80);
+      shownTasks = found;
+      body = [h('h3', { class: 'group-title' }, '搜索到 ' + found.length + ' 项' + (current ? '（只在这个分区里）' : '')), found.length ? found.map(listRow) : h('p', { class: 'empty' }, '没有标题里包含「' + ui.search.trim() + '」的任务。')];
     } else if (tab === 'goals') {
       body = goals.length ? goals.map((g) => goalCard(g, type === 'project'))
         : h('p', { class: 'empty' }, type === 'project' ? '这个项目还没有目标。在聊天里说说这个项目要做成什么、什么时候要，助手会拆成阶段和任务。' : '还没有目标。在聊天里说「我想在 12 月底前学完单片机」，助手会拆成每周和每天的任务。');
@@ -700,6 +780,7 @@
       ];
     } else {
       const tasks = visibleTasks(tab);
+      shownTasks = tasks;
       const quick = tab === 'todo' ? h('input', { class: 'quick-add', placeholder: '写一件要办的事，按回车', maxLength: 150, 'aria-label': '添加待办',
         onkeydown: (e) => {
           if (e.key !== 'Enter' || e.isComposing || !e.target.value.trim()) return;
@@ -708,7 +789,7 @@
           const again = $('.quick-add');
           if (again) again.focus();
         } }) : null;
-      body = [tab === 'today' && !ui.space ? timetable.daily(today()) : null, quick, tasks.length ? tasks.map(taskRow) : h('p', { class: 'empty' }, emptyText[tab]),
+      body = [tab === 'today' && !ui.space ? timetable.daily(today()) : null, quick, tasks.length ? tasks.map(listRow) : h('p', { class: 'empty' }, emptyText[tab]),
         tab === 'today' && type !== 'habit' && habits.length ? [h('h3', { class: 'group-title' }, '习惯'), ...habits.map(habitRow)] : null];
     }
     const foot = tab === 'cards' && !query ? [button('outline', '新卡片', () => openCardDialog(null))] : type === 'habit' ? [button('outline', '新习惯', () => openHabitDialog(null)), button('ghost', '新记录项', openMetricDialog)]
@@ -730,7 +811,9 @@
       query ? '' : h('div', { class: 'segmented', role: 'tablist' }, tabs.map(([key, label]) =>
         h('button', { role: 'tab', 'aria-selected': String(tab === key), class: tab === key ? 'on' : '', onclick: () => { ui.tabs[type] = key; render(); } }, label))),
       h('div', { class: 'list-scroll' }, body),
-      h('div', { class: 'list-foot' }, foot));
+      ui.selecting && shownTasks.length ? batchBar(shownTasks.map((x) => x.id))
+        : h('div', { class: 'list-foot' }, foot, shownTasks.length > 1 ? h('button', { class: 'btn ghost', title: '选中几项一起改日期、加标签、完成或删除', onclick: () => { ui.selecting = true; ui.selected.clear(); rowMenu = null; render(); } }, '多选') : null));
+    if (ui.selecting && !shownTasks.length) endSelecting();
   }
 
   /* ---------- what is coming: the class now or next, exams and deadlines counted down, cards due ---------- */
@@ -897,7 +980,7 @@
   /* ---------- chat ---------- */
   function taskSummary(a) {
     const sp = a.spaceId ? ' · ' + (space(a.spaceId) || {}).name : '';
-    return whenLabel(a) + ' · ' + minutesLabel(a.minutes) + sp;
+    return whenLabel(a) + ' · ' + minutesLabel(a.minutes) + sp + (a.tags && a.tags.length ? ' · ' + a.tags.map((x) => '#' + x).join(' ') : '');
   }
   const stepList = (steps) => h('ol', { class: 'steps' }, steps.map((s, i) => h('li', {}, h('span', { class: 'num' }, i + 1 + '.'), h('span', { class: 'step-title' }, s.title), h('span', { class: 'sub' }, s.minutes + ' 分钟'))));
   /* The same list with controls: rename, change minutes, reorder, remove, add. */
@@ -936,10 +1019,13 @@
       if (a.date !== undefined) parts.push('改到 ' + dateLabel(a.date));
       if (a.time !== undefined) parts.push(a.time ? '开始时间 ' + a.time : '去掉开始时间');
       if (a.minutes !== undefined) parts.push('时长 ' + minutesLabel(a.minutes));
+      if (a.tags !== undefined) parts.push(a.tags.length ? '标签改为 ' + a.tags.map((x) => '#' + x).join(' ') : '去掉标签');
       return line('修改', name(a.taskId), parts.join(' · '));
     }
     if (a.type === 'complete_task') return line('完成', name(a.taskId));
     if (a.type === 'delete_task') return line('删除', name(a.taskId));
+    if (a.type === 'add_repeat') return line('重复任务', a.title, C.repeatLabel(a.rule) + (a.time ? ' ' + a.time : '') + ' · ' + minutesLabel(a.minutes) + (a.spaceId ? ' · ' + (space(a.spaceId) || {}).name : '') + (a.tags.length ? ' · ' + a.tags.map((x) => '#' + x).join(' ') : ''),
+      h('p', { class: 'sub' }, '接下来：' + (C.nextOccurrences(a.rule, today(), 3).map(dateLabel).join('、') || '结束日期之前一次也没有')));
     if (a.type === 'add_habit') return line('新习惯', a.title, '每周 ' + a.perWeek + ' 次');
     if (a.type === 'add_goal') {
       return line('新目标', a.title, a.deadline ? '截止 ' + plainDate(a.deadline) : '', h('div', { class: 'goal-plan' }, a.milestones.map((m) => h('div', { class: 'milestone' },
@@ -1941,8 +2027,9 @@
 
   /* ---------- repeating tasks: one rule, edited in one place ---------- */
   function stopRepeatFlow(rule) {
-    if (!confirm('停止「' + rule.title + '」的重复？\n从今天起还没开始的那几次会删掉；已经做过或开始做的会保留成普通任务。')) return;
-    if (undoable('已停止重复', () => commit(C.stopRepeat(state, rule.id, today())))) closeDialog();
+    const next = C.stopRepeat(state, rule.id, today());
+    const removed = state.tasks.length - next.tasks.length;
+    if (undoable('已停止重复' + (removed ? '，还没开始的 ' + removed + ' 次已删掉' : '') + '；做过的保留成普通任务', () => commit(next))) closeDialog();
   }
   function openRepeatDialog(rule) {
     const ruleBox = h('input', { name: 'rule', maxLength: 60, value: C.repeatLabel(rule.rule), placeholder: '例如 每周一三五、每天、每隔一天、每月1号、到12月31日', oninput: () => readRule() });
@@ -2065,8 +2152,8 @@
 
   /* `draft` carries what was typed so far when the dialog is rebuilt after a step edit. */
   function openTaskDialog(task, draft) {
-    const v = draft || { title: task ? task.title : '', date: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today(), next: task ? task.next || '' : '', time: task ? task.time || '' : '', minutes: task ? task.minutes : 30, space: task ? task.spaceId || '' : ui.space || '', tags: task ? task.tags || [] : ui.tag ? [ui.tag] : [] };
-    const typed = () => ({ next: form.next.value, title: form.title.value, date: form.date.value, time: form.time.value, minutes: form.minutes.value, space: form.space.value, tags: C.cleanTags(form.tags.value) });
+    const v = draft || { title: task ? task.title : '', date: task ? task.date || '' : (space(ui.space) || {}).type === 'life' ? '' : today(), next: task ? task.next || '' : '', time: task ? task.time || '' : '', minutes: task ? task.minutes : 30, space: task ? task.spaceId || '' : ui.space || '', tags: task ? task.tags || [] : ui.tag ? [ui.tag] : [], note: task ? task.note || '' : '' };
+    const typed = () => ({ next: form.next.value, title: form.title.value, date: form.date.value, time: form.time.value, minutes: form.minutes.value, space: form.space.value, tags: C.cleanTags(form.tags.value), note: form.note.value });
     // Tags already used elsewhere, offered with one click so the same word is not spelled two ways.
     const known = tagsInUse(() => true).map(([tag]) => tag);
     const tagBox = h('input', { name: 'tags', maxLength: 90, value: (v.tags || []).join(' '), placeholder: '例如 考试 作业（用空格分开）', oninput: () => drawSuggest() });
@@ -2077,6 +2164,11 @@
       suggest.replaceChildren(...rest.map((tag) => h('button', { type: 'button', class: 'utag', style: '--tag:' + tagColor(tag), title: '加上这个标签', onclick: () => { tagBox.value = [...C.cleanTags(tagBox.value), tag].join(' '); drawSuggest(); } }, '+ #' + tag)));
     };
     drawSuggest();
+    // Links written in the note open with one click.
+    const noteBox = h('textarea', { name: 'note', rows: 2, maxLength: 1000, value: v.note || '', placeholder: '要求、页码、链接…', oninput: () => drawLinks() });
+    const links = h('div', { class: 'note-links' });
+    const drawLinks = () => links.replaceChildren(...noteLinks(noteBox.value).map((url) => h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', title: url }, icon('pop'), url.replace(/^https?:\/\//, '').slice(0, 48))));
+    drawLinks();
     const editStep = (op) => {
       try {
         if (!commit(C.editTaskSteps(state, task.id, op))) return;
@@ -2120,12 +2212,13 @@
       h('p', { class: 'sub' }, '填了开始时间的任务会和课程一起显示在课表的周视图里，并在开始前提醒。'),
       field('分区', h('select', { name: 'space' }, h('option', { value: '' }, '不分区'), state.spaces.map((x) => h('option', { value: x.id, selected: x.id === v.space }, x.name)))),
       h('label', { class: 'field' }, h('span', {}, '标签（可以不填，最多 6 个）'), tagBox, suggest),
+      h('div', { class: 'field' }, h('label', { class: 'field' }, h('span', {}, '备注 / 链接（可以不填）'), noteBox), links),
       field('下次从哪里继续（可以留空，开始计时时会显示）', h('input', { name: 'next', maxLength: 300, value: v.next || '' })),
       stepEditor,
       task ? h('div', { class: 'row' }, h('button', { type: 'button', class: 'pill soft', onclick: () => openSessionDialog(null, { taskId: task.id }) }, icon('plus'), '补记这个任务花的时间'),
         h('span', { class: 'sub' }, '已记录 ' + minutesLabel(state.sessions.filter((x) => x.taskId === task.id).reduce((n, x) => n + x.actual, 0)))) : null,
     ], [
-      task ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这个任务？')) { undoable('任务已删除', () => change((s) => { s.tasks = s.tasks.filter((x) => x.id !== task.id); if (s.timer && s.timer.taskId === task.id) s.timer = null; })); closeDialog(); } } }, '删除') : null,
+      task ? h('button', { type: 'button', class: 'btn danger', onclick: () => { undoable('任务已删除', () => change((s) => { s.tasks = s.tasks.filter((x) => x.id !== task.id); if (s.timer && s.timer.taskId === task.id) s.timer = null; })); closeDialog(); } }, '删除') : null,
       h('span', { class: 'grow' }), cancelButton(),
       h('button', { class: 'btn dark', onclick: () => {
         const title = form.title.value.trim();
@@ -2144,6 +2237,8 @@
           if (date) delete target.week;
           const tags = C.cleanTags(form.tags.value);
           if (tags.length) target.tags = tags; else delete target.tags;
+          const note = form.note.value.replace(/\r/g, '').trim().slice(0, 1000);
+          if (note) target.note = note; else delete target.note;
           const next = form.next.value.replace(/\s+/g, ' ').trim();
           if (next) target.next = next; else delete target.next;
           if (!task) s.tasks.push(target);
@@ -2161,7 +2256,7 @@
         field('每周几次', h('input', { name: 'perWeek', type: 'number', min: 1, max: 7, value: habit ? habit.perWeek : 3 })),
         field('分区', spaceSelect(habit ? habit.spaceId : ui.space))),
     ], [
-      habit ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这个习惯和它的打卡记录？')) { undoable('习惯已删除', () => change((s) => { s.habits = s.habits.filter((x) => x.id !== habit.id); })); closeDialog(); } } }, '删除') : null,
+      habit ? h('button', { type: 'button', class: 'btn danger', onclick: () => { undoable('习惯和打卡记录已删除', () => change((s) => { s.habits = s.habits.filter((x) => x.id !== habit.id); })); closeDialog(); } }, '删除') : null,
       h('span', { class: 'grow' }), cancelButton(),
       h('button', { class: 'btn dark', onclick: () => {
         const title = form.title.value.trim();
@@ -2192,9 +2287,8 @@
       field('颜色', swatches),
     ], [
       current ? h('button', { type: 'button', class: 'btn danger', onclick: () => {
-        if (!confirm('删除分区「' + current.name + '」？里面的任务和习惯会保留，变成不分区。')) return;
         ui.space = null;
-        undoable('分区已删除', () => commit(C.normalize({ ...C.clone(state), spaces: state.spaces.filter((x) => x.id !== current.id) })));
+        undoable('分区已删除，里面的任务和习惯变成不分区', () => commit(C.normalize({ ...C.clone(state), spaces: state.spaces.filter((x) => x.id !== current.id) })));
         closeDialog();
       } }, '删除') : null,
       h('span', { class: 'grow' }), cancelButton(),
@@ -2220,7 +2314,7 @@
       whenHelp(() => form, { kind: 'past' }),
       field('内容', h('textarea', { name: 'text', rows: 8, maxLength: 4000, value: current ? current.text : '' })),
     ], [
-      current ? h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('删除这条反思？')) { undoable('反思已删除', () => change((s) => { s.reflections = s.reflections.filter((x) => x.id !== current.id); })); closeDialog(); } } }, '删除') : null,
+      current ? h('button', { type: 'button', class: 'btn danger', onclick: () => { undoable('反思已删除', () => change((s) => { s.reflections = s.reflections.filter((x) => x.id !== current.id); })); closeDialog(); } }, '删除') : null,
       h('span', { class: 'grow' }), cancelButton(),
       h('button', { class: 'btn dark', onclick: () => {
         const text = form.text.value.trim();
@@ -2424,7 +2518,7 @@
           } }, '导出 JSON'),
           h('button', { type: 'button', class: 'btn outline slim', onclick: () => importInput.click() }, '导入 JSON'), importInput),
         h('div', { class: 'row' },
-          h('button', { type: 'button', class: 'btn ghost', onclick: () => { if (confirm('清空全部对话？任务、记录和记忆会保留。')) { closePanel(); undoable('对话已清空', () => change((s) => { s.messages = []; })); } } }, '清空对话')),
+          h('button', { type: 'button', class: 'btn ghost', onclick: () => { closePanel(); undoable('对话已清空，任务、记录和记忆都还在', () => change((s) => { s.messages = []; })); } }, '清空对话')),
       ]],
     };
     if (!sections[ui.panelSection]) ui.panelSection = 'model';
@@ -2453,7 +2547,7 @@
   }
 
   /* ---------- shell ---------- */
-  const timetable = window.TPlanTimetableUI({ getState: () => state, commit, toast, h, compose: (text) => openComposer('course', text), openWorkspace: () => { ui.mode = 'timetable'; render(); }, undoable, openTask: (id) => { const task = state.tasks.find((x) => x.id === id); if (task) openTaskDialog(task); },
+  const timetable = window.TPlanTimetableUI({ getState: () => state, commit, toast, h, compose: (text) => openComposer('course', text), refresh: () => render(), openWorkspace: () => { ui.mode = 'timetable'; render(); }, undoable, openTask: (id) => { const task = state.tasks.find((x) => x.id === id); if (task) openTaskDialog(task); },
     courses: {
       spaceFor: spaceForCourse,
       /* One study space per course, tied to it by title. A space that already carries the course's name is tied rather than duplicated. */
@@ -2712,6 +2806,19 @@
       const error = item.ok ? null : mode === 'course' ? item.errors[0] : item.error;
       live.replaceChildren(...[h('span', { class: 'sub' }, '识别为：'), pills, error ? h('span', { class: 'cp-error' }, error) : null].filter(Boolean));
     };
+    /* When finished, timed tasks have run long or short of their plans, the card offers a length that fits the record. */
+    const estimateRow = (msg, item) => {
+      if (msg.mode !== 'task' || !item.ok || item.kept) return null;
+      const target = item.task || item.repeat;
+      if (item.adjusted) return h('p', { class: 'cp-ok' }, '已按你的记录改成 ' + minutesLabel(target.minutes));
+      const sug = C.suggestMinutes(state, target.minutes, target.spaceId);
+      if (!sug) return null;
+      const where = sug.scope === 'space' && space(target.spaceId) ? '「' + space(target.spaceId).name + '」里' : '';
+      return h('div', { class: 'cp-estimate' }, icon('clock'),
+        h('span', {}, '按你的记录，' + where + '用计时做完的 ' + sug.tasks + ' 个任务，实际用时大约是计划的 ' + sug.factor + ' 倍。这件事可能要 ' + minutesLabel(sug.minutes) + '。'),
+        h('button', { class: 'btn outline slim', onclick: () => { target.minutes = sug.minutes; item.minutesGiven = true; item.adjusted = true; drawComposer(); } }, '改成 ' + minutesLabel(sug.minutes)),
+        h('button', { class: 'text-btn', onclick: () => { item.kept = true; drawComposer(); } }, '不用'));
+    };
     const bubble = (msg, i) => {
       if (msg.role === 'user') return h('div', { class: 'cp-msg me' }, h('div', { class: 'cp-bubble' }, msg.text));
       const good = msg.items.filter((x) => x.ok).length, noun = COMPOSER[msg.mode].noun;
@@ -2719,7 +2826,7 @@
       const single = msg.mode === 'task' && msg.items.length === 1 && msg.items[0].task ? msg.items[0].task : null;
       return h('div', { class: 'cp-msg bot' }, h('div', { class: 'cp-bubble' },
         h('p', {}, good === msg.items.length ? '读到了 ' + msg.items.length + ' ' + noun + '，看一下对不对：' : '有 ' + (msg.items.length - good) + ' 行没读懂，标红的地方可以改了再发：'),
-        msg.items.map((item) => h('div', { class: 'cp-card' + (item.ok ? '' : ' bad') }, cardView(msg.mode, item))),
+        msg.items.map((item) => h('div', { class: 'cp-card' + (item.ok ? '' : ' bad') }, cardView(msg.mode, item), msg.done ? null : estimateRow(msg, item))),
         msg.done ? h('p', { class: 'cp-done' }, icon('check'), msg.done)
           : h('div', { class: 'cp-actions' },
             good ? h('button', { class: 'btn dark slim', onclick: () => addFromComposer(msg) }, clashes ? '仍然添加' : good === msg.items.length ? '添加' : '添加能读懂的 ' + good + ' ' + noun) : null,
@@ -2753,6 +2860,32 @@
     hint();
   }
 
+  /* The workbench tiles can be hidden and reordered; the hero always stays first. */
+  const HOME_TILES = [['focus', '今天已记录'], ['tasks', '今天的事'], ['countdown', '倒计时'], ['route', '今天的路线'], ['habits', '习惯开关', '有习惯时才出现'], ['week', '本周已记录'], ['streak', '连续记录'], ['assistant', '规划助手'], ['money', '余额'], ['remind', '提醒开关'], ['goals', '目标进度', '有目标时才出现'], ['cards', '复习卡片', '有卡片时才出现'], ['spaces', '分区']];
+  function homeOrder() {
+    const known = HOME_TILES.map(([key]) => key);
+    const saved = state.settings.prefs.homeOrder.filter((key, i, all) => known.includes(key) && all.indexOf(key) === i);
+    return [...saved, ...known.filter((key) => !saved.includes(key))];
+  }
+  function openHomeDialog() {
+    const order = homeOrder(), hidden = state.settings.prefs.homeHidden;
+    const save = (mutate) => { if (change((s) => mutate(s.settings.prefs))) openHomeDialog(); };
+    const swap = (i, j) => save((p) => { const next = [...order]; [next[i], next[j]] = [next[j], next[i]]; p.homeOrder = next; });
+    const rows = order.map((key, i) => {
+      const [, name, note] = HOME_TILES.find(([k]) => k === key);
+      const shown = !hidden.includes(key);
+      return h('div', { class: 'homec-row' + (shown ? '' : ' off') },
+        h('label', {}, h('input', { type: 'checkbox', checked: shown, onchange: () => save((p) => { p.homeHidden = shown ? [...hidden, key] : hidden.filter((x) => x !== key); p.homeOrder = order; }) }), h('span', {}, name), note ? h('small', {}, note) : null),
+        h('button', { type: 'button', class: 'mini', 'aria-label': '把「' + name + '」上移', title: '上移', disabled: i === 0, onclick: () => swap(i, i - 1) }, icon('up')),
+        h('button', { type: 'button', class: 'mini down', 'aria-label': '把「' + name + '」下移', title: '下移', disabled: i === order.length - 1, onclick: () => swap(i, i + 1) }, icon('up')));
+    });
+    openDialog('自定义工作台', [
+      h('p', { class: 'sub' }, '去掉勾选的卡片不显示；越靠上的排得越靠前。最上面的大卡固定在第一格。改动立即生效。'),
+      h('div', { class: 'homec-list' }, rows),
+    ], [
+      h('button', { type: 'button', class: 'btn ghost', disabled: !hidden.length && !state.settings.prefs.homeOrder.length, onclick: () => save((p) => { p.homeHidden = []; p.homeOrder = []; }) }, '恢复默认'),
+      h('span', { class: 'grow' }), h('button', { type: 'button', class: 'btn dark', onclick: closeDialog }, '好')]);
+  }
   /* Late tasks are spread over the coming days instead of all landing on today. The plan is shown first. */
   function openSpreadDialog() {
     const t = today();
@@ -2844,7 +2977,7 @@
         h('div', {}, h('strong', {}, n.done + ' / ' + todayTasks.length), h('small', {}, '完成 / 今天的事')),
         h('div', {}, h('strong', {}, minutesLabel(n.focus)), h('small', {}, '今天已记录')),
         h('div', { class: n.over ? 'over' : '' }, h('strong', {}, minutesLabel(n.planned) + (budget ? ' / ' + minutesLabel(budget) : '')), h('small', {}, n.over ? '已安排，超出 ' + minutesLabel(n.over) : budget ? '已安排 / 每天可安排' : '已安排'), budget ? bar(n.planned, budget, n.over ? 'over' : '') : null)),
-      timetable.daily(t).slice(1), todayTasks.length ? todayTasks.map(taskRow) : h('p', { class: 'empty' }, '今天还没有任务。'), quick);
+      timetable.todayClasses(), todayTasks.length ? todayTasks.map(taskRow) : h('p', { class: 'empty' }, '今天还没有任务。'), quick);
 
     // --- the week
     const week = C.weekSummary(state, monday);
@@ -2982,45 +3115,130 @@
       h('div', { class: 'starters' }, STARTERS.map((text) => h('button', { class: 'pill soft', onclick: () => ask(text) }, text)),
         !modelName() ? h('button', { class: 'pill soft', onclick: () => openSettings('model') }, icon('plus'), '连接模型') : null));
 
+    // --- the bento grid: one hero, then small tiles that each say one thing. A tile that has more behind it
+    // grows in place into its detail card; the detail cards are the fuller cards built above.
     const hour = now.getHours();
     const hello = hour < 5 ? '夜深了' : hour < 11 ? '早上好' : hour < 13 ? '中午好' : hour < 18 ? '下午好' : '晚上好';
     const schedule = T.normalize(state.schedule).settings;
     const weekNo = T.dateOK(schedule.semesterStart) && monday >= schedule.semesterStart ? Math.round(C.daysBetween(schedule.semesterStart, monday) / 7) + 1 : 0;
-    $('#main').replaceChildren(h('div', { class: 'home-scroll' },
+    const details = { today: todayCard, free: freeCard, week: weekCard, progress: progressCard, dates: datesCard, money: moneyCard, goals: goalsCard, cards: cardsCard, spaces: spacesCard, habits: habitsCard };
+    const tile = (key, cls, opens, label, ...children) => h(opens ? 'button' : 'div', { class: 'bento-tile ' + cls, 'data-bento': key, title: opens ? '点开看详细' : null,
+      onclick: opens ? (e) => (typeof opens === 'function' ? opens() : openBento(opens, e.currentTarget)) : null }, label ? h('span', { class: 'bento-label' }, label) : null, children);
+    const bigMinutes = (m) => (m < 100 ? [String(m), '分钟'] : [String(Math.round(m / 6) / 10), '小时']);
+    // A number tile holds one large number and one line of words, nothing else.
+    const numberTile = (key, cls, opens, label, value, unit, line) => tile(key, 'bt-num bt-' + cls, opens, label,
+      h('strong', { class: 'bento-num' + (String(value).length > 3 ? ' long' : '') }, value, unit ? h('small', {}, unit) : null), h('span', { class: 'bento-line' }, line));
+
+    const [focusValue, focusUnit] = bigMinutes(n.focus);
+    const firstDate = dates[0];
+    const doneToday = todayTasks.filter((x) => x.done).length;
+    const shownTasks = todayTasks.length > 10 ? todayTasks.slice(0, 9) : todayTasks;
+    // Today's stops in order: classes and tasks with a start time, as one line across.
+    const stops = [...T.events(state.schedule, t, t).map((e) => ({ title: e.title, start: e.startTime, end: e.endTime })),
+      ...state.tasks.filter((x) => x.date === t && x.time).map((x) => ({ title: x.title, start: x.time, end: null, done: x.done }))].sort((a, b) => a.start.localeCompare(b.start));
+    const nextStop = stops.findIndex((x) => x.start > clockNow);
+    const window6 = stops.length <= 6 ? stops : stops.slice(Math.max(0, Math.min(stops.length - 6, (nextStop < 0 ? stops.length : nextStop) - 2))).slice(0, 6);
+    const [weekValue, weekUnit] = bigMinutes(week.recorded);
+    const remindOn = (Number(state.settings.prefs.remindMinutes) || 0) > 0;
+    const goalDone = goalRows.reduce((a, x) => a + x.done, 0), goalTotal = goalRows.reduce((a, x) => a + x.total, 0);
+    const tiles = {
+      focus: numberTile('focus', 'accent', 'week', '今天已记录', focusValue, focusUnit, '本周 ' + minutesLabel(week.recorded) + (week.capacity ? ' / ' + minutesLabel(week.capacity) : '')),
+      tasks: tile('tasks', 'bt-progress', 'today', '今天的事',
+        h('b', { class: 'bento-count' }, doneToday + '/' + todayTasks.length),
+        todayTasks.length ? h('div', { class: 'bento-icons', style: '--cols:' + Math.max(3, Math.min(5, todayTasks.length)) }, shownTasks.map((x) => h('i', { class: x.done ? 'on' : '', title: (x.done ? '已完成：' : '还没做：') + x.title }, x.done ? icon('check') : x.title.slice(0, 1))),
+          todayTasks.length > 10 ? h('i', { class: 'more' }, '+' + (todayTasks.length - 9)) : null)
+          : h('span', { class: 'bento-line' }, '今天还没有任务，点开加一件')),
+      countdown: firstDate ? numberTile('countdown', 'dark', 'dates', '倒计时', firstDate.daysLeft === 0 ? '今天' : String(firstDate.daysLeft), firstDate.daysLeft === 0 ? '' : '天', firstDate.title)
+        : numberTile('countdown', 'plain', () => openComposer('date'), '倒计时', '+', '', '记下考试或截止日期'),
+      route: tile('route', 'bt-strip', 'free', '今天的路线',
+        h('b', { class: 'bento-count' }, ahead.free ? '还空 ' + minutesLabel(ahead.free) : ''),
+        window6.length ? h('div', { class: 'bento-route', role: 'img', 'aria-label': '今天的安排：' + window6.map((x) => x.start + ' ' + x.title).join('，') }, window6.map((x, i) => {
+          const reached = x.start <= clockNow, through = reached && window6[i + 1] && window6[i + 1].start <= clockNow;
+          return h('div', { class: 'stop' + (reached ? ' reached' : '') + (through ? ' through' : '') + (reached && !through ? ' here' : '') }, h('i', {}), h('b', {}, x.title), h('small', {}, x.start));
+        })) : h('span', { class: 'bento-line' }, '今天没有课，也没有定了时间的任务')),
+      habits: state.habits.slice(0, 4).map((habit) => {
+        const on = !!habit.log[t];
+        return h('button', { class: 'bento-tile bt-toggle' + (on ? ' on' : ''), 'data-bento': 'habit', role: 'switch', 'aria-checked': String(on), title: on ? '点一下取消今天的打卡' : '点一下打卡',
+          onclick: () => change((s) => { const x = s.habits.find((y) => y.id === habit.id); if (x.log[t]) delete x.log[t]; else x.log[t] = true; }) },
+        h('span', { class: 'bento-switch' }, h('i', {})), h('strong', {}, habit.title), h('span', { class: 'bento-line' }, (on ? '今天已打卡' : '今天还没做') + ' · 本周 ' + C.habitWeekCount(habit, t) + '/' + habit.perWeek));
+      }),
+      week: numberTile('week', 'plain', 'week', '本周已记录', weekValue, weekUnit, week.focus ? week.focus.split('\n')[0] : '还没写这一周的重点'),
+      streak: numberTile('streak', 'plain', 'progress', '连续记录', String(run.current), '天', '最长 ' + run.longest + ' 天 · 近 7 天 ' + minutesLabel(sum7)),
+      assistant: tile('assistant', 'bt-strip bt-ask', null, '规划助手',
+        pending ? h('button', { class: 'bento-count warn', onclick: () => open('planner', null) }, pending + ' 份提议待确认') : h('button', { class: 'bento-count link', onclick: () => open('planner', null) }, '打开对话 ›'),
+        h('div', { class: 'home-ask' }, askBox, h('button', { class: 'send', 'aria-label': '发送', onclick: () => { if (askBox.value.trim()) ask(askBox.value.trim()); } }, icon('send'))),
+        h('span', { class: 'bento-line' }, lastReply ? lastReply.text.replace(/\s+/g, ' ').slice(0, 60) : modelName() ? '告诉我你的任务、目标或者困难' : '本地模式：每一行变成一个任务')),
+      money: numberTile('money', 'plain', 'money', '余额', money(ms.balance), '', '今天 +' + money(ms.today.in) + ' −' + money(ms.today.out)),
+      remind: h('button', { class: 'bento-tile bt-toggle' + (remindOn ? ' on' : ''), 'data-bento': 'remind', role: 'switch', 'aria-checked': String(remindOn), title: remindOn ? '点一下关闭提醒' : '点一下打开提醒',
+        onclick: () => change((s) => { s.settings.prefs.remindMinutes = remindOn ? 0 : 10; }) },
+      h('span', { class: 'bento-switch' }, h('i', {})), h('strong', {}, '上课和任务提醒'), h('span', { class: 'bento-line' }, remindOn ? '开 · 提前 ' + state.settings.prefs.remindMinutes + ' 分钟' : '关')),
+      goals: goalRows.length ? (goalTotal ? numberTile('goals', 'plain', 'goals', '目标进度', goalDone + '/' + goalTotal, '', goalRows[0].g.title) : numberTile('goals', 'plain', 'goals', '目标', String(state.goals.length), '个', goalRows[0].g.title + ' · 还没有任务')) : null,
+      cards: cards.total ? numberTile('cards', cards.dueToday ? 'accent' : 'plain', 'cards', '复习卡片', String(cards.dueToday), '张', cards.dueToday ? '今天到期，点开复习' : '今天没有到期 · 共 ' + cards.total + ' 张') : null,
+      spaces: tile('spaces', 'bt-strip', null, '分区',
+        h('button', { class: 'bento-count link', onclick: (e) => openBento('spaces', e.currentTarget.closest('.bento-tile')) }, '全部 ›'),
+        h('div', { class: 'bento-spaces' }, state.spaces.slice(0, 8).map((sp) => {
+          const left = state.tasks.filter((x) => x.spaceId === sp.id && !x.done).length;
+          return h('button', { title: sp.name + (left ? ' · ' + left + ' 项待办' : ''), onclick: () => open('planner', sp.id) }, h('span', { class: 'avatar', style: 'background:' + sp.color }, sp.name.slice(0, 1), left ? h('em', {}, String(left)) : null), h('small', {}, sp.name));
+        }))),
+    };
+    hero.classList.add('bento-tile', 'bt-hero');
+    hero.setAttribute('data-bento', 'hero');
+    $('#main').replaceChildren(h('div', { class: 'home-scroll bento-page' },
       h('header', { class: 'home-head' }, h('div', {}, h('h2', {}, (state.settings.prefs.name ? state.settings.prefs.name + '，' : '') + hello), h('p', { class: 'sub' }, plainDate(t) + ' 周' + '日一二三四五六'[now.getDay()] + (weekNo && (!schedule.weekCount || weekNo <= schedule.weekCount) ? ' · 第 ' + weekNo + ' 教学周' : ''))),
-        h('div', { class: 'head-actions' }, h('button', { class: 'pill soft', title: '快捷键：在任何页面按 N', onclick: () => openComposer('task') }, icon('plus'), h('span', {}, '新建任务')), h('button', { class: 'pill soft', onclick: () => openComposer('course') }, icon('plus'), h('span', {}, '添加课程')), h('button', { class: 'pill soft', onclick: () => openSessionDialog(null) }, icon('plus'), h('span', {}, '补记时间')))),
-      hero,
-      h('div', { class: 'home-grid' })));
-    // The cards go into whichever column is shortest at that moment, so the columns end close together
-    // instead of one running long beside an empty one. Today stays first in the widest column.
-    const grid = $('.home-grid');
-    const width = grid.clientWidth;
-    const count = width >= 1040 ? 3 : width >= 620 ? 2 : 1;
-    homeColumns = count;
-    grid.style.setProperty('--cols', String(count));
-    grid.classList.toggle('wide-first', count > 1);
-    const cols = Array.from({ length: count }, () => grid.appendChild(h('div', { class: 'home-col' })));
-    cols[0].append(todayCard);
-    for (const el of [freeCard, weekCard, assistantCard, progressCard, datesCard, habitsCard, goalsCard, cardsCard, moneyCard, spacesCard]) {
-      if (!el) continue;
-      const shortest = cols.reduce((a, b) => (b.offsetHeight < a.offsetHeight - 8 ? b : a));
-      shortest.append(el);
-    }
+        h('div', { class: 'head-actions' }, h('button', { class: 'pill soft', title: '快捷键：在任何页面按 N', onclick: () => openComposer('task') }, icon('plus'), h('span', {}, '新建任务')), h('button', { class: 'pill soft', onclick: () => openComposer('course') }, icon('plus'), h('span', {}, '添加课程')), h('button', { class: 'pill soft', onclick: () => openSessionDialog(null) }, icon('plus'), h('span', {}, '补记时间')),
+          h('button', { class: 'pill soft', title: '选择工作台显示哪些卡片、按什么顺序', onclick: openHomeDialog }, icon('sliders'), h('span', {}, '自定义')))),
+      h('div', { class: 'bento' }, hero, homeOrder().filter((key) => !state.settings.prefs.homeHidden.includes(key)).map((key) => tiles[key]))));
+    refreshBento(details);
     $('.home-scroll').scrollTop = scrollAt;
     tick();
   }
-  let homeColumns = 0;
-  // A wider or narrower window, or a dragged task column, can change how many columns the workbench uses.
-  let homeResize = null;
-  if (window.ResizeObserver) new ResizeObserver(() => {
-    clearTimeout(homeResize);
-    homeResize = setTimeout(() => {
-      const grid = ui.mode === 'home' && $('.home-grid');
-      if (!grid) return;
-      const width = grid.clientWidth;
-      if ((width >= 1040 ? 3 : width >= 620 ? 2 : 1) !== homeColumns) renderHome();
-    }, 120);
-  }).observe($('#main'));
+  /* A tile grows from where it sits into a large panel in about 400 ms; its detail fades in, the rest of the
+     page dims and stays put. Closing shrinks it back into its tile. The panel's content is rebuilt with the page. */
+  const bento = { key: null, root: null, panel: null, body: null, details: null, timer: null };
+  const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function refreshBento(details) {
+    bento.details = details;
+    if (!bento.key) return;
+    const card = details[bento.key];
+    if (!card) return closeBento(true);
+    const at = bento.body.scrollTop;
+    bento.body.replaceChildren(card);
+    bento.body.scrollTop = at;
+  }
+  function openBento(key, tileEl) {
+    if (bento.key || !bento.details || !bento.details[key]) return;
+    const from = tileEl.getBoundingClientRect(), area = $('#main').getBoundingClientRect();
+    const width = Math.min(area.width - 32, 860), height = Math.min(area.height - 32, 760);
+    const to = { left: area.left + (area.width - width) / 2, top: area.top + (area.height - height) / 2, width, height };
+    const place = (r) => 'left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px';
+    const body = h('div', { class: 'bento-detail' }, bento.details[key]);
+    const panel = h('div', { class: 'bento-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': '详细', style: place(from) },
+      h('button', { class: 'icon-btn bento-close', 'aria-label': '关闭', onclick: () => closeBento() }, icon('close')), body);
+    const root = h('div', { class: 'bento-over', onclick: (e) => { if (e.target === root) closeBento(); } }, panel);
+    document.body.append(root);
+    Object.assign(bento, { key, root, panel, body });
+    tileEl.classList.add('opened');
+    panel.getBoundingClientRect(); // the starting box is laid out before it grows
+    root.classList.add('open');
+    panel.style.cssText = place(to);
+    panel.querySelector('.bento-close').focus({ preventScroll: true });
+  }
+  function closeBento(now) {
+    if (!bento.key) return;
+    const { root, panel, key } = bento;
+    const tileEl = document.querySelector('.bento [data-bento="' + key + '"]') || document.querySelector('.bento-tile.opened');
+    const finish = () => { root.remove(); for (const el of document.querySelectorAll('.bento-tile.opened')) el.classList.remove('opened'); };
+    clearTimeout(bento.timer);
+    Object.assign(bento, { key: null, root: null, panel: null, body: null });
+    if (now || calm() || !tileEl) return finish();
+    const r = tileEl.getBoundingClientRect();
+    root.classList.remove('open');
+    panel.style.cssText = 'left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px';
+    bento.timer = setTimeout(finish, 420);
+    if (tileEl.focus) tileEl.focus({ preventScroll: true });
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && bento.key && !document.querySelector('dialog[open]')) { e.preventDefault(); closeBento(); } });
+  window.addEventListener('resize', () => closeBento(true));
   // The workbench shows the time of day (the class in progress, what comes next), so it is redrawn each minute when nothing is being typed.
   setInterval(() => { if (ui.mode === 'home' && !$('#dialog').open && !$('#panel').open && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) renderHome(); }, 60000);
 
@@ -3103,6 +3321,7 @@
 
   function render() {
     if (ui.mode === 'home') ui.space = null; // the workbench is about everything, not one space
+    else closeBento(true);
     renderRail();
     renderList();
     $('#shell').classList.toggle('timetable-mode', ui.mode === 'timetable' || ui.mode === 'week' || ui.mode === 'home' || ui.mode === 'review' || ui.mode === 'money');

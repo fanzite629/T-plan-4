@@ -696,6 +696,8 @@ test('repeat phrases are read into rules', () => {
   assert.strictEqual(ranged.start, '2026-11-23');
   assert.strictEqual(ranged.until, '2026-12-31');
   assert.ok(C.parseTaskLine(s, '每周 跑步3次', D).error);
+  assert.ok(C.parseTaskLine(s, '每周三次 跑步', D).error); // a count, not Wednesday
+  assert.deepStrictEqual(rule('每周三 跑步').rule.days, [3]);
   assert.strictEqual(C.parseTaskLine(s, '明天 复习', D).task.date, '2026-11-17');
   assert.deepStrictEqual(C.nextOccurrences(rule('每两周周四 组会').rule, D, 3), ['2026-11-19', '2026-12-03', '2026-12-17']);
   assert.deepStrictEqual(C.nextOccurrences({ kind: 'monthly', start: '2027-01-01', day: 31 }, '2027-02-01', 2), ['2027-02-28', '2027-03-31']);
@@ -810,4 +812,63 @@ test('reviewSummary reads a period: totals, busiest weekday and hour, areas, tas
   const weekly = C.reviewSummary(s, '2026-11-02', '2026-11-15', { bucket: 'week' });
   assert.deepStrictEqual(weekly.series.map((x) => x.minutes), [45, 100]);
   assert.strictEqual(C.reviewSummary(C.emptyState(), '2026-11-09', '2026-11-15').bestWeekday, null);
+});
+
+test('the assistant can propose a repeating task and tags; context carries both', () => {
+  let s = C.emptyState();
+  const { actions: accepted, rejected } = C.validateActions(s, [
+    { type: 'add_repeat', title: '交实验报告', repeat: '每周四', minutes: 30, space: '学习', tags: ['#作业'] },
+    { type: 'add_repeat', title: '跑步', repeat: '每周三次' },
+    { type: 'add_task', title: '复习', date: TODAY, minutes: 40, tags: ['考试', '考试'] },
+  ]);
+  assert.strictEqual(rejected.length, 1);
+  assert.deepStrictEqual(accepted[0].rule.days, [4]);
+  assert.deepStrictEqual(accepted[0].tags, ['作业']);
+  assert.deepStrictEqual(accepted[1].tags, ['考试']);
+  s.messages.push({ id: 'm1', role: 'assistant', at: 1, text: '', proposal: { status: 'pending', actions: accepted } });
+  s = C.resolveProposal(s, 'm1', true);
+  assert.strictEqual(s.repeats.length, 1);
+  assert.ok(s.tasks.some((t) => t.repeatId === s.repeats[0].id));
+  const ctx = C.buildContext(s, TODAY, { message: 'x' });
+  assert.deepStrictEqual(ctx.repeatingTasks.map((r) => r.repeat), ['每周四']);
+  assert.ok(ctx.tagsInUse.includes('考试'));
+  assert.ok(ctx.openTasks.some((t) => t.fromRepeat) && ctx.openTasks.some((t) => t.tags && t.tags[0] === '考试'));
+});
+
+test('tags can be renamed, merged and deleted everywhere', () => {
+  const s = C.emptyState();
+  const task = (id, tags) => s.tasks.push({ id, title: id, date: null, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: 1, tags });
+  task('a', ['考试', '复习']); task('b', ['考式']); task('c', ['考式', '考试']);
+  s.repeats.push({ id: 'r', title: 'x', minutes: 30, spaceId: null, tags: ['考式'], rule: { kind: 'daily', start: TODAY }, madeUntil: null, createdAt: 1 });
+  const merged = C.renameTag(s, '考式', '考试');
+  assert.deepStrictEqual(merged.tasks.map((t) => t.tags), [['考试', '复习'], ['考试'], ['考试']]);
+  assert.deepStrictEqual(merged.repeats[0].tags, ['考试']);
+  const gone = C.deleteTag(merged, '考试');
+  assert.deepStrictEqual(gone.tasks.map((t) => t.tags), [['复习'], undefined, undefined]);
+  assert.throws(() => C.renameTag(s, '考试', '  '));
+});
+
+test('estimates come from finished, timed tasks: the middle ratio, by space when it has enough', () => {
+  const s = C.emptyState();
+  const add = (id, planned, actual, spaceId, extra = {}) => { s.tasks.push({ id, title: id, date: null, minutes: planned, spaceId, done: true, doneAt: 1, createdAt: 1, ...extra }); s.sessions.push({ id: 's' + id, taskId: id, date: TODAY, actual, planned, spaceId }); };
+  for (let i = 0; i < 4; i++) add('a' + i, 40, 60, 'space_1');
+  assert.strictEqual(C.estimateFactor(s, 'space_1'), null); // four are not enough
+  add('a4', 40, 300, 'space_1'); // one runaway task does not move the middle
+  assert.deepStrictEqual(C.estimateFactor(s, 'space_1'), { factor: 1.5, tasks: 5, scope: 'space' });
+  assert.strictEqual(C.estimateFactor(s, 'space_2').scope, 'all');
+  assert.deepStrictEqual(C.suggestMinutes(s, 40, 'space_1'), { factor: 1.5, tasks: 5, scope: 'space', minutes: 60 });
+  // time added on the timer raises task.minutes; the first estimate is what counts
+  const t = C.emptyState(); t.tasks.push({ id: 'x', title: 'x', date: null, minutes: 25, spaceId: null, done: false, doneAt: null, createdAt: 1, steps: [{ title: 'x', minutes: 25, done: false }] });
+  const timing = C.extendTimer(C.startTimer(t, 'x', 1000), 5);
+  assert.strictEqual(timing.tasks[0].minutes, 30); assert.strictEqual(timing.tasks[0].estimate, 25);
+  const close = C.emptyState(); for (let i = 0; i < 5; i++) { close.tasks.push({ id: 'c' + i, title: 'c', date: null, minutes: 40, spaceId: null, done: true, doneAt: 1, createdAt: 1 }); close.sessions.push({ id: 'k' + i, taskId: 'c' + i, date: TODAY, actual: 42 }); }
+  assert.strictEqual(C.suggestMinutes(close, 40), null); // close to the plan: say nothing
+});
+
+test('a task keeps a note through normalize', () => {
+  const s = C.emptyState();
+  s.tasks.push({ id: 'a', title: 'a', date: null, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: 1, note: '  要求见 https://example.com/hw3  ' }, { id: 'b', title: 'b', date: null, minutes: 30, spaceId: null, done: false, doneAt: null, createdAt: 1, note: '   ' });
+  const n = C.normalize(JSON.parse(JSON.stringify(s)));
+  assert.strictEqual(n.tasks[0].note, '要求见 https://example.com/hw3');
+  assert.strictEqual('note' in n.tasks[1], false);
 });

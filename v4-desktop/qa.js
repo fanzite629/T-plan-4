@@ -18,7 +18,7 @@
     if (sessionStorage.getItem('qa-timetable-complete')) {
       checks.unshift(...JSON.parse(sessionStorage.getItem('qa-timetable-complete')));
       assert(read().schedule.courses.length === 3 && read().schedule.settings.periods.length === 4, '课表与学校时间重新加载后保留');
-      assert(document.querySelector('.tt-day-card')?.textContent.includes('当天测试课'), '重新加载后当天课程正常显示');
+      assert([...document.querySelectorAll('.tt-day-card, .tt-day-past')].some(el => el.textContent.includes('当天测试课')), '重新加载后当天课程正常显示');
       post({ kind: 'qa-result', ok: true, checks });
       return;
     }

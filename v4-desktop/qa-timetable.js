@@ -76,8 +76,8 @@ window.runTimetableQa = async function (assert) {
   assert(read().schedule.courses.length === 0 && accept().textContent.includes('5 次课') && !accept().disabled, '拖入CSV先预览，确认前不写入');
   accept().click();
   assert(T.events(read().schedule).length === 5 && document.querySelectorAll('.tt-event').length > 0, '确认后按日期和节次填入周视图');
-  document.querySelector('button[title="全部"]').click();
-  assert(document.querySelector('.tt-day-card')?.textContent.includes('当天测试课'), '当天课程进入日常安排');
+  document.querySelector('button[aria-label="工作台"]').click();
+  assert([...document.querySelectorAll('.tt-day-card, .tt-day-past')].some(el => el.textContent.includes('当天测试课')), '当天课程进入日常安排');
   document.querySelector('button[aria-label="课表"]').click();
   drop(csv); document.querySelector('select[aria-label="课表识别方式"]').value = 'rules'; click('开始识别'); await until(previewReady, '重复预览');
   assert(accept().disabled && read().schedule.courses.length === 2, '重复导入不会重复写课');
