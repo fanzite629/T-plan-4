@@ -92,3 +92,19 @@
 .tt-course-row small { color:var(--t2); font-size:12px; }
 .tt-course-row .btn { font-size:13px; }
 @media(max-width:680px) { .tt-grid:has(.has-periods) .tt-grid-head,.tt-grid:has(.has-periods) .tt-grid-body { grid-template-columns:70px repeat(7,minmax(84px,1fr)); } }
+
+/* Event blocks: whole lines only, the "now" line under the text, today's finished classes folded. */
+.tt-event strong { display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; flex:none; }
+.tt-event small { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:none; }
+.tt-event .tt-live, .tt-event .tt-clash { font-weight:650; }
+.tt-event .tt-clash { color:var(--bad); }
+.tt-now { z-index:auto; }
+.tt-day-card strong em { font-style:normal; font-weight:650; margin-left:8px; font-size:12px; }
+.tt-day-card.live { border-left-color:var(--ok); background:color-mix(in srgb,var(--ok) 8%,var(--panel)); }
+.tt-day-card.live strong em { color:var(--ok); }
+.tt-day-card.past { opacity:.6; }
+.tt-day-past { display:flex; align-items:baseline; gap:8px; width:100%; padding:7px 12px; border-radius:10px; border:1px dashed var(--line); text-align:left; font-size:13px; color:var(--t2); min-width:0; }
+.tt-day-past:hover { color:var(--text); border-color:var(--t3); }
+.tt-day-past span { flex:none; font-weight:600; }
+.tt-day-past small { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px; }
+.tt-day-past i { flex:none; font-style:normal; font-size:12px; }

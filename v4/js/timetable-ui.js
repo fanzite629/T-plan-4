@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const T = window.TPlanTimetable;
-  window.TPlanTimetableUI = function ({ getState, commit, toast, h, openWorkspace, openTask = () => {}, undoable = (label, apply) => apply(), courses: link = null, compose = null }) {
+  window.TPlanTimetableUI = function ({ getState, commit, toast, h, openWorkspace, openTask = () => {}, undoable = (label, apply) => apply(), courses: link = null, compose = null, refresh = () => {} }) {
     let currentWeek = T.weekStart(new Date().toLocaleDateString('sv-SE')), activeDraft = null, jobId = 0;
     const dialog = h('dialog', { class: 'tt-dialog', 'aria-label': '导入课表' });
     const schoolDialog = h('dialog', { class: 'tt-dialog tt-school', 'aria-label': '学期与节次设置' });
@@ -17,6 +17,22 @@
     function courseCard(e) {
       return h('button', { class: 'tt-day-card', onclick: () => details(e), 'aria-label': e.startTime + ' ' + e.title },
         h('strong', {}, e.startTime + '–' + e.endTime), h('span', {}, e.title), h('small', {}, [e.room, e.teacher].filter(Boolean).join(' · ') || '课程'));
+    }
+    /* Today's classes for the workbench: the ones already over fold into one line, the one in progress is marked. */
+    let pastOpen = false;
+    function todayClasses() {
+      const date = today(), courses = T.events(schedule(), date, date);
+      if (!courses.length) return [];
+      const d = new Date(), clock = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      const past = courses.filter(e => e.endTime <= clock), rest = courses.filter(e => e.endTime > clock);
+      const card = (e, cls, note) => h('button', { class: 'tt-day-card ' + cls, onclick: () => details(e), 'aria-label': e.startTime + ' ' + e.title + (note ? '，' + note : '') },
+        h('strong', {}, e.startTime + '–' + e.endTime, note ? h('em', {}, note) : null), h('span', {}, e.title), h('small', {}, [e.room, e.teacher].filter(Boolean).join(' · ') || '课程'));
+      return [
+        past.length ? h('button', { class: 'tt-day-past', 'aria-expanded': String(pastOpen), title: pastOpen ? '收起' : '展开已经上完的课', onclick: () => { pastOpen = !pastOpen; refresh(); } },
+          h('span', {}, '已上完 ' + past.length + ' 节'), h('small', {}, past.map(e => e.title).join('、')), h('i', {}, pastOpen ? '收起' : '展开')) : null,
+        ...(pastOpen ? past.map(e => card(e, 'past', '已结束')) : []),
+        ...rest.map(e => e.startTime <= clock ? card(e, 'live', '正在上课 · 到 ' + e.endTime) : card(e, '', '')),
+      ].filter(Boolean);
     }
     function daily(date) {
       const courses = T.events(schedule(), date, date);
@@ -57,8 +73,8 @@
           h('p', { class: 'sub' }, '来源：' + (course.source || '手动填写') + (course.weeks ? ' · 第 ' + course.weeks + ' 周' : '')),
           h('details', {}, h('summary', {}, '查看识别依据'), h('pre', {}, course.evidence || '无原文'))),
         h('div', { class: 'tt-dialog-foot' }, ...(link ? courseActions(course.title) : []), btn('编辑这条课程规则', () => { activeDraft = { rows: [{ ...course, selected: true }], reports: [], editId: course.id }; showPreview(); }),
-          btn('取消这一天的课', () => { if (!confirm('仅取消 ' + event.date + ' 这一次课程？')) return; const s = schedule(); const c = s.courses.find(x => x.id === course.id); c.excludedDates = [...new Set([...(c.excludedDates || []), event.date])]; if (undoable('已取消 ' + event.date + ' 的这次课', () => save(s))) dialog.close(); }, 'ghost'),
-          btn('删除这条课程规则', () => { if (!confirm('删除这条规则及它展开的所有课程日期？')) return; const s = schedule(); s.courses = s.courses.filter(x => x.id !== course.id); if (undoable('课程规则已删除', () => save(s))) dialog.close(); }, 'danger')));
+          btn('取消这一天的课', () => { const s = schedule(); const c = s.courses.find(x => x.id === course.id); c.excludedDates = [...new Set([...(c.excludedDates || []), event.date])]; if (undoable('已取消 ' + event.date + ' 的这次课', () => save(s))) dialog.close(); }, 'ghost'),
+          btn('删除这条课程规则', () => { const s = schedule(); s.courses = s.courses.filter(x => x.id !== course.id); if (undoable('课程规则已删除', () => save(s))) dialog.close(); }, 'danger')));
       openDialog(dialog);
     }
     /* What a course leads to: its space, a new task for it, its exam date. */
@@ -104,6 +120,18 @@
       }
       activeDraft = { rows: [row], reports: [], manual: true }; showPreview();
     }
+    /* What fits in an event block of this height: the title on as many lines as there is room for, then the
+       time with the status in front of it, then the room. Nothing is cut through the middle of a line. */
+    function eventLines(e, live, conflict, height) {
+      const inner = height - 10, TITLE = 17, SMALL = 16.5;
+      const showTime = inner >= TITLE + SMALL, showRoom = !!e.room && inner >= TITLE + 2 * SMALL;
+      const lines = Math.max(1, Math.floor((inner - ((showTime ? 1 : 0) + (showRoom ? 1 : 0)) * SMALL) / TITLE));
+      const status = [live ? '正在上课' : '', conflict ? '时间冲突' : ''].filter(Boolean).join(' · ');
+      return [
+        h('strong', { style: '-webkit-line-clamp:' + lines }, (e.task ? (e.task.done ? '✓ ' : '任务 · ') : '') + e.title),
+        showTime ? h('small', {}, status ? h('b', { class: live ? 'tt-live' : 'tt-clash' }, status + ' · ') : null, live ? '到 ' + e.endTime : e.startTime + '–' + e.endTime) : null,
+        showRoom ? h('small', {}, e.room) : null];
+    }
     function render() {
       const keep = document.querySelector('.tt-grid-scroll'), scrollAt = keep ? [keep.scrollTop, keep.scrollLeft] : null;
       const now = new Date(), nowMinute = now.getHours() * 60 + now.getMinutes();
@@ -146,7 +174,7 @@
           const conflict = dayEvents.some(other => clash(e, other));
           const live = !e.task && date === today() && T.minutes(e.startTime) <= nowMinute && nowMinute < T.minutes(e.endTime);
           placed.push(h('button', { class: 'tt-event' + (e.task ? ' task' + (e.task.done ? ' done' : '') : '') + (conflict ? ' conflict' : '') + (live ? ' live' : ''), style: 'top:' + ((T.minutes(e.startTime) - startMinute) * scale) + 'px;height:' + Math.max(25, (T.minutes(e.endTime) - T.minutes(e.startTime)) * scale - 3) + 'px;left:calc(' + col * 100 / g.columns + '% + 3px);width:calc(' + 100 / g.columns + '% - 6px)', onclick: () => e.task ? openTask(e.task.id) : details(e), title: (e.task ? '任务：' : '') + e.title + '\n' + e.startTime + '–' + e.endTime + '\n' + e.room + (conflict ? '\n与其他安排重叠' : '') },
-            h('strong', {}, (e.task ? (e.task.done ? '✓ ' : '任务 · ') : '') + e.title), h('small', {}, e.startTime + '–' + e.endTime), e.room ? h('small', {}, e.room) : null, live ? h('small', { class: 'tt-live' }, '正在上课') : null, conflict ? h('small', {}, '时间冲突') : null));
+            ...eventLines(e, live, conflict, Math.max(25, (T.minutes(e.endTime) - T.minutes(e.startTime)) * scale - 3))));
         }
         lane.append(...placed); grid.append(lane);
       }
@@ -302,6 +330,6 @@
       }
       update(); openDialog(dialog);
     }
-    return { render, daily, openImport, settings, details };
+    return { render, daily, todayClasses, openImport, settings, details };
   };
 })();
