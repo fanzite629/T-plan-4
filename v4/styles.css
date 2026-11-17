@@ -1274,3 +1274,38 @@ button.bento-count.warn { color: var(--bad); }
 .card, .stat, .home-card { border-radius: 24px; }
 .review-scroll, .money-scroll { gap: 12px; }
 .review-grid, .review-col, .rc-pair, .money-grid, .viz-top, .viz-grid { gap: 12px; }
+
+/* ===== review page as a bento grid ===== */
+.tt-header + .review-scroll.bento-page { padding-top: 8px; }
+.bento-tile.bt-recap { grid-column: span 3; gap: 8px; }
+.bento-tile.bt-recap .rc-title { font-size: 27px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.bento-tile.bt-recap .rc-text { font-size: 15px; line-height: 1.75; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; overflow: hidden; }
+.bento-icons.cells { gap: 4px; }
+.bento-icons.cells i { max-height: 26px; max-width: none; border-radius: 6px; }
+.bento-tile .rc-split { margin-top: auto; height: 14px; }
+.bento-legend { display: flex; gap: 6px 16px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; max-height: 40px; overflow: hidden; }
+.bento-legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.bento-legend i { width: 10px; height: 10px; border-radius: 3px; }
+.bento-legend b { color: var(--t2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.bento-bars { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-top: auto; height: 92px; }
+.bento-bars > div { display: grid; grid-template-rows: minmax(0, 1fr) auto auto; justify-items: center; gap: 1px; min-width: 0; }
+.bento-bars span { display: flex; align-items: flex-end; width: 100%; max-width: 30px; height: 100%; border-radius: 7px; background: var(--soft); overflow: hidden; }
+.bento-bars span i { display: block; width: 100%; border-radius: 7px; background: color-mix(in srgb, var(--b-blue) 45%, var(--panel)); }
+.bento-bars .now span i { background: var(--b-blue); }
+.bento-bars b { font-size: 12px; font-variant-numeric: tabular-nums; }
+.bento-bars small { font-size: 11px; color: var(--t2); white-space: nowrap; }
+.bento-notes { display: flex; flex-direction: column; gap: 4px; margin-top: auto; }
+.bento-notes p { font-size: 13px; color: var(--t2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bento-notes b { color: var(--text); font-weight: 650; }
+/* detail cards from the review page inside a grown tile */
+.bento-stack { display: flex; flex-direction: column; gap: 24px; }
+.bento-detail > .card, .bento-stack > .card { border: 0; background: none; padding: 0; }
+.bento-detail .card > h3, .bento-detail .card-head h3 { font-size: 20px; }
+.bento-detail .card-head { padding-right: 44px; }
+.bento-detail > .card.viz { padding: 0; background: none; }
+.bento-detail .viz-top, .bento-detail .viz-grid, .bento-detail .rc-pair { grid-template-columns: minmax(0, 1fr); }
+.bento-detail .viz-figs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.bento-detail .viz-fig.lead { grid-column: auto; }
+.bento-detail .viz-badge { margin-right: 44px; }
+.bento-detail .rc-title { font-size: 28px; padding-right: 44px; }
+@media (max-width: 680px) { .bento-tile.bt-recap { grid-column: span 2; grid-row: span 2; } .bento-tile.bt-recap .rc-title { font-size: 21px; } .bento-tile.bt-recap .rc-text { font-size: 14px; -webkit-line-clamp: 6; } }

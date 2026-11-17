@@ -1886,18 +1886,9 @@
 
     // --- the recap in words
     const words = recapWords(r, wk);
-    const hero = h('section', { class: 'rc-hero' },
-      h('h3', { class: 'rc-title' }, words.title), h('p', { class: 'rc-text' }, words.text),
-      modelName() && r.total ? h('div', { class: 'row' }, h('button', { class: 'pill soft', title: '把这一段的记录交给助手，让它写一段总结和建议', onclick: () => { ui.mode = 'planner'; ui.space = null; render(); send('请根据我 ' + plainDate(start) + ' 到 ' + plainDate(end) + ' 的时间记录和完成情况，写一段回顾：时间花在了哪里、和之前比有什么变化、下一步建议做什么。只根据记录说，不要猜。'); } }, icon('note'), '让助手写一段回顾')) : null);
+    const assistantButton = () => (modelName() && r.total ? h('div', { class: 'row' }, h('button', { class: 'pill soft', title: '把这一段的记录交给助手，让它写一段总结和建议', onclick: () => { closeBento(true); ui.mode = 'planner'; ui.space = null; render(); send('请根据我 ' + plainDate(start) + ' 到 ' + plainDate(end) + ' 的时间记录和完成情况，写一段回顾：时间花在了哪里、和之前比有什么变化、下一步建议做什么。只根据记录说，不要猜。'); } }, icon('note'), '让助手写一段回顾')) : null);
 
-    // --- a few large figures
-    const big = (value, label, note) => h('div', { class: 'rc-fig' }, h('strong', {}, value), h('span', {}, label), note ? h('small', {}, note) : null);
     const diff = r.total - r.previous;
-    const figures = h('div', { class: 'rc-figs' },
-      big(r.total ? minutesLabel(r.total) : '0 分钟', '已记录的时间', r.previous || r.total ? (diff >= 0 ? '比之前多 ' : '比之前少 ') + minutesLabel(Math.abs(diff)) : null),
-      big(r.bestWeekday === null ? '—' : '星期' + '一二三四五六日'[r.bestWeekday], '记录最多的一天', r.bestDay ? plainDate(r.bestDay.date) + ' · ' + minutesLabel(r.bestDay.minutes) : null),
-      big(r.peakHour ? hourLabel(r.peakHour.hour) : '—', '高峰时段', r.peakHour ? '这一小时里开始的记录共 ' + minutesLabel(r.peakHour.minutes) : r.total ? '补记没有填开始时间' : null),
-      big(r.done + (planned.length ? ' / ' + planned.length : ''), planned.length ? '完成 / 安排的事' : '完成的事', r.activeDays + ' 天有记录 · ' + r.sessions + ' 段'));
 
     // --- one chart, two readings, or a table
     const byTime = reviewMetric === 'time';
@@ -1979,49 +1970,84 @@
     const days = Array.from({ length: 7 }, (_, i) => C.addDays(start, i));
     const max = Math.max(60, ...days.map((d) => sessions.filter((x) => x.date === d).reduce((m, x) => m + x.actual, 0)));
     const shownSessions = [...sessions].sort((a, b) => b.date.localeCompare(a.date) || (b.endedAt || 0) - (a.endedAt || 0));
+    // --- the detail cards, each reached by growing a tile
+    const sectionCard = (...children) => h('section', { class: 'card' }, children);
+    const recapCard = sectionCard(h('h3', { class: 'rc-title' }, words.title), h('p', { class: 'rc-text' }, words.text), assistantButton());
+    const dayCard = isWeek ? sectionCard(h('h3', {}, '这一周的每一天'), dayAccordion(days, sessions, max), h('p', { class: 'sub' }, '点一天展开。竖条的高度是那天已记录的时间。')) : null;
+    const recordsCard = sectionCard(
+      h('div', { class: 'card-head' }, h('h3', {}, '时间记录'), h('button', { type: 'button', class: 'pill soft', onclick: () => openSessionDialog(null, { date: t >= start && t <= end ? t : start }) }, icon('plus'), '补记一段')),
+      shownSessions.length ? h('div', { class: 'session-list' }, shownSessions.slice(0, 60).map((x) => h('button', { type: 'button', class: 'session-row', title: '修改这条记录', onclick: () => openSessionDialog(x) },
+        h('span', { class: 'session-when' }, dateLabel(x.date).split(' ')[0] + (x.startTime ? ' ' + x.startTime : '')),
+        h('span', { class: 'session-what' }, x.step && x.step !== x.title ? x.title + ' · ' + x.step : x.title,
+          x.note || x.stuck ? h('small', {}, [x.note, x.stuck ? '卡在：' + x.stuck : ''].filter(Boolean).join('　')) : null),
+        h('span', { class: 'sub' }, [x.manual ? '补记' : x.edited ? '改过' : '', x.partial ? '没做完这一段' : ''].filter(Boolean).join(' · ')),
+        h('b', {}, minutesLabel(x.actual)))),
+      shownSessions.length > 60 ? h('p', { class: 'sub' }, '只列出最近的 60 条，共 ' + shownSessions.length + ' 条。') : null)
+        : h('p', { class: 'empty' }, wk + '还没有时间记录。用计时完成一段会自动记下；没开计时做的事可以补记。'));
+    const doneCard = sectionCard(h('h3', {}, wk + '完成的事'),
+      doneList.length ? h('ul', { class: 'plain' }, doneList.slice(0, 40).map((x) => h('li', {}, x.title, h('span', { class: 'sub' }, ' · ' + minutesLabel(x.minutes))))) : h('p', { class: 'empty' }, wk + '没有完成的任务。'));
+    const reflectCard = sectionCard(
+      h('div', { class: 'card-head' }, h('h3', {}, '反思'), h('button', { class: 'pill soft', onclick: () => openReflectionDialog(null) }, icon('plus'), '写一条')),
+      state.reflections.length ? h('div', { class: 'reflections' }, [...state.reflections].reverse().slice(0, 30).map((x) => h('article', { class: 'reflection' },
+        h('header', {}, h('strong', {}, dateLabel(x.date)), h('span', { class: 'sub' }, x.source === 'user' ? '自己写的' : '助手记录的'),
+          h('span', { class: 'grow' }),
+          h('button', { class: 'icon-btn small', 'aria-label': '修改这条反思', title: '修改', onclick: () => openReflectionDialog(x) }, icon('gear'))),
+        h('p', { class: 'reflection-text' }, x.text))))
+        : h('p', { class: 'empty' }, '还没有反思。可以把写在本子上的反思拍照拖进聊天框，助手会读出文字并记录在这里。'));
+    const insights = profileCards();
+    const notesCard = sectionCard(h('div', { class: 'card-head' }, h('h3', {}, '从记录里看到的'), h('span', { class: 'sub' }, '助手安排时参考这些')),
+      h('div', { class: 'rc-notes' }, insights.map(([glyph, title, text]) => h('div', { class: 'rc-note' }, h('span', { class: 'rc-note-icon' }, icon(glyph)), h('div', {}, h('strong', {}, title), h('p', {}, text))))),
+      h('div', { class: 'row' }, h('button', { class: 'pill soft', onclick: () => openSettings('memory') }, icon('note'), '查看和修改长期记忆（' + state.memory.length + ' 条）')));
+    const habitsCard = state.habits.length && isWeek ? sectionCard(h('h3', {}, '习惯'),
+      h('div', { class: 'habit-grid' }, state.habits.map((habit) => h('div', { class: 'habit-line' },
+        h('span', { class: 'task-title' }, habit.title),
+        h('span', { class: 'cells' }, days.map((d) => h('span', { class: 'cell' + (habit.log[d] ? ' on' : ''), title: dateLabel(d) }))),
+        h('span', { class: 'sub' }, C.habitWeekCount(habit, days[0]) + ' / ' + habit.perWeek))))) : null;
+    const stack = (...cards) => h('div', { class: 'bento-stack' }, cards);
+    const details = { recap: recapCard, chart: stack(chartCard, dayCard), where: whereCard, rank: rankCard, weeks: weeksCard, growth: trajectoryCard(goWeek), records: recordsCard, done: doneCard, reflect: reflectCard, notes: notesCard, habits: habitsCard };
+
+    // --- the tiles: the recap as the hero, then one thing per tile
+    const [totalValue, totalUnit] = bigMinutes(r.total);
+    const growth = C.trajectory(state, t);
+    const cells = r.series.filter((x) => x.from <= t);
+    const active = cells.filter((x) => x.minutes > 0).length;
+    const habitDone = state.habits.reduce((a, x) => a + Math.min(x.perWeek, C.habitWeekCount(x, days[0])), 0), habitGoal = state.habits.reduce((a, x) => a + x.perWeek, 0);
+    const lastReflection = state.reflections[state.reflections.length - 1];
+    const tiles = [
+      h('button', { class: 'bento-tile bt-hero bt-recap', 'data-bento': 'recap', title: '点开看完整的回顾', onclick: (e) => openBento('recap', e.currentTarget) },
+        h('span', { class: 'bento-label' }, wk + '的回顾'), h('h3', { class: 'rc-title' }, words.title), h('p', { class: 'rc-text' }, words.text)),
+      bentoNumber('total', 'accent', 'chart', '已记录的时间', totalValue, totalUnit, r.previous || r.total ? (diff >= 0 ? '比之前多 ' : '比之前少 ') + minutesLabel(Math.abs(diff)) : '点开看每一天'),
+      bentoTile('days', 'bt-progress', 'chart', reviewPeriod === 'quarter' ? '有记录的周' : '有记录的天',
+        h('b', { class: 'bento-count' }, active + '/' + cells.length),
+        h('div', { class: 'bento-icons cells', style: '--cols:' + (cells.length <= 7 ? 7 : cells.length <= 12 ? 6 : 10) }, cells.map((x) => h('i', { class: x.minutes ? 'on' : '', title: rangeLabel(x) + '：' + (x.minutes ? minutesLabel(x.minutes) : '没有记录') })))),
+      bentoNumber('weekday', 'plain', null, '记录最多的一天', r.bestWeekday === null ? '—' : '周' + '一二三四五六日'[r.bestWeekday], '', r.bestDay ? plainDate(r.bestDay.date) + ' · ' + minutesLabel(r.bestDay.minutes) : '还没有记录', true),
+      bentoNumber('peak', 'plain', null, '高峰时段', r.peakHour ? String(r.peakHour.hour) : '—', r.peakHour ? '点' : '', r.peakHour ? hourLabel(r.peakHour.hour) + ' · ' + minutesLabel(r.peakHour.minutes) : r.total ? '补记没有填开始时间' : '还没有记录'),
+      bentoNumber('done', 'dark', 'done', planned.length ? '完成 / 安排' : '完成的事', r.done + (planned.length ? '/' + planned.length : ''), planned.length ? '' : '件', r.activeDays + ' 天有记录 · ' + r.sessions + ' 段'),
+      bentoTile('where', 'bt-strip', r.areas.length ? 'where' : null, '时间花在了哪里',
+        r.areas.length ? [h('div', { class: 'rc-split' }, r.areas.map((a) => h('i', { style: 'flex-grow:' + a.minutes + ';background:' + areaColor(a) }))),
+          h('div', { class: 'bento-legend' }, r.areas.slice(0, 3).map((a) => h('span', {}, h('i', { style: 'background:' + areaColor(a) }), a.name, h('b', {}, Math.round(share(a)) + '%'))))]
+          : h('span', { class: 'bento-line' }, wk + '没有时间记录')),
+      r.tasks.length ? bentoNumber('rank', 'plain', 'rank', '用时最多的任务', ...bigMinutes(r.tasks[0].minutes), r.tasks[0].title) : null,
+      bentoTile('weeks', 'bt-strip', 'weeks', '最近 6 周 · 已记录 / 可投入',
+        h('div', { class: 'bento-bars' }, [...weeks].reverse().map((w, i) => h('div', { class: i === 5 ? 'now' : '', title: plainDate(w.monday) + ' 那一周：' + minutesLabel(w.sum.recorded) },
+          h('span', {}, h('i', { style: 'height:' + Math.max(w.sum.recorded ? 6 : 0, (w.sum.recorded / weekTop) * 100).toFixed(1) + '%' })),
+          h('b', {}, w.sum.capacity ? Math.round((w.sum.recorded / w.sum.capacity) * 100) + '%' : shortTime(w.sum.recorded)),
+          h('small', {}, i === 5 ? '本周' : Number(w.monday.slice(5, 7)) + '/' + Number(w.monday.slice(8))))))),
+      bentoNumber('growth', 'plain', 'growth', '成长轨迹', String(growth.recordedDays), '天', '近 20 周有记录的天数'),
+      bentoNumber('records', 'plain', 'records', '时间记录', String(r.sessions), '段', '点开查看、修改和补记'),
+      bentoNumber('reflect', 'plain', 'reflect', '反思', String(state.reflections.length), '条', lastReflection ? lastReflection.text.replace(/\s+/g, ' ').slice(0, 40) : '点开写一条'),
+      habitsCard ? bentoNumber('habits', 'plain', 'habits', '习惯打卡', habitDone + '/' + habitGoal, '', '这一周的打卡次数 / 目标') : null,
+      bentoTile('notes', 'bt-strip', 'notes', '从记录里看到的',
+        h('div', { class: 'bento-notes' }, insights.slice(0, 2).map(([, title, text]) => h('p', {}, h('b', {}, title + '：'), text)))),
+    ];
     $('#main').replaceChildren(
       h('header', { class: 'tt-header' }, h('div', {}, h('h2', {}, '回看'), h('p', { class: 'sub' }, plainDate(start) + ' – ' + plainDate(end) + (isWeek && !reviewOffset ? '（本周）' : '') + ' · 只显示已记录的事实，时间长短不代表学习效果。')),
         h('div', { class: 'tt-week-nav' },
           isWeek ? h('button', { type: 'button', class: 'btn ghost', disabled: start <= earliest, onclick: () => go(reviewOffset - 1) }, '‹ 上一周') : null,
           isWeek ? h('button', { type: 'button', class: 'btn ghost', disabled: reviewOffset >= 0, onclick: () => go(reviewOffset + 1) }, '下一周 ›') : null,
           seg([['week', isWeek && reviewOffset ? '这一周' : '本周'], ['month', '近 30 天'], ['quarter', '近 12 周']], reviewPeriod, (key) => { if (key === 'week' && isWeek) reviewOffset = 0; reviewPeriod = key; reviewDay = null; render(); }, '看多长一段'))),
-      h('div', { class: 'review-scroll' },
-        hero, figures, chartCard, whereCard,
-        h('div', { class: 'rc-pair' }, rankCard, weeksCard),
-        trajectoryCard(goWeek),
-        h('div', { class: 'review-grid' },
-          h('div', { class: 'review-col' },
-            isWeek ? h('section', { class: 'card' }, h('h3', {}, '这一周的每一天'), dayAccordion(days, sessions, max),
-              h('p', { class: 'sub' }, '点一天展开。竖条的高度是那天已记录的时间。')) : null,
-            h('section', { class: 'card' },
-              h('div', { class: 'card-head' }, h('h3', {}, '时间记录'), h('button', { type: 'button', class: 'pill soft', onclick: () => openSessionDialog(null, { date: t >= start && t <= end ? t : start }) }, icon('plus'), '补记一段')),
-              shownSessions.length ? h('div', { class: 'session-list' }, shownSessions.slice(0, 60).map((x) => h('button', { type: 'button', class: 'session-row', title: '修改这条记录', onclick: () => openSessionDialog(x) },
-                h('span', { class: 'session-when' }, dateLabel(x.date).split(' ')[0] + (x.startTime ? ' ' + x.startTime : '')),
-                h('span', { class: 'session-what' }, x.step && x.step !== x.title ? x.title + ' · ' + x.step : x.title,
-                  x.note || x.stuck ? h('small', {}, [x.note, x.stuck ? '卡在：' + x.stuck : ''].filter(Boolean).join('　')) : null),
-                h('span', { class: 'sub' }, [x.manual ? '补记' : x.edited ? '改过' : '', x.partial ? '没做完这一段' : ''].filter(Boolean).join(' · ')),
-                h('b', {}, minutesLabel(x.actual)))),
-              shownSessions.length > 60 ? h('p', { class: 'sub' }, '只列出最近的 60 条，共 ' + shownSessions.length + ' 条。') : null)
-                : h('p', { class: 'empty' }, wk + '还没有时间记录。用计时完成一段会自动记下；没开计时做的事可以补记。')),
-            h('section', { class: 'card' }, h('h3', {}, wk + '完成的事'),
-              doneList.length ? h('ul', { class: 'plain' }, doneList.slice(0, 40).map((x) => h('li', {}, x.title, h('span', { class: 'sub' }, ' · ' + minutesLabel(x.minutes))))) : h('p', { class: 'empty' }, wk + '没有完成的任务。'))),
-          h('div', { class: 'review-col' },
-            h('section', { class: 'card' },
-              h('div', { class: 'card-head' }, h('h3', {}, '反思'), h('button', { class: 'pill soft', onclick: () => openReflectionDialog(null) }, icon('plus'), '写一条')),
-              state.reflections.length ? h('div', { class: 'reflections' }, [...state.reflections].reverse().slice(0, 30).map((x) => h('article', { class: 'reflection' },
-                h('header', {}, h('strong', {}, dateLabel(x.date)), h('span', { class: 'sub' }, x.source === 'user' ? '自己写的' : '助手记录的'),
-                  h('span', { class: 'grow' }),
-                  h('button', { class: 'icon-btn small', 'aria-label': '修改这条反思', title: '修改', onclick: () => openReflectionDialog(x) }, icon('gear'))),
-                h('p', { class: 'reflection-text' }, x.text))))
-                : h('p', { class: 'empty' }, '还没有反思。可以把写在本子上的反思拍照拖进聊天框，助手会读出文字并记录在这里。')),
-            h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h3', {}, '从记录里看到的'), h('span', { class: 'sub' }, '助手安排时参考这些')),
-              h('div', { class: 'rc-notes' }, profileCards().map(([glyph, title, text]) => h('div', { class: 'rc-note' }, h('span', { class: 'rc-note-icon' }, icon(glyph)), h('div', {}, h('strong', {}, title), h('p', {}, text))))),
-              h('div', { class: 'row' }, h('button', { class: 'pill soft', onclick: () => openSettings('memory') }, icon('note'), '查看和修改长期记忆（' + state.memory.length + ' 条）'))),
-            state.habits.length && isWeek ? h('section', { class: 'card' }, h('h3', {}, '习惯'),
-              h('div', { class: 'habit-grid' }, state.habits.map((habit) => h('div', { class: 'habit-line' },
-                h('span', { class: 'task-title' }, habit.title),
-                h('span', { class: 'cells' }, days.map((d) => h('span', { class: 'cell' + (habit.log[d] ? ' on' : ''), title: dateLabel(d) }))),
-                h('span', { class: 'sub' }, C.habitWeekCount(habit, days[0]) + ' / ' + habit.perWeek))))) : null))));
+      h('div', { class: 'review-scroll bento-page' }, h('div', { class: 'bento' }, tiles)));
+    refreshBento(details);
     $('.review-scroll').scrollTop = scrollAt;
   }
 
@@ -3122,12 +3148,7 @@
     const schedule = T.normalize(state.schedule).settings;
     const weekNo = T.dateOK(schedule.semesterStart) && monday >= schedule.semesterStart ? Math.round(C.daysBetween(schedule.semesterStart, monday) / 7) + 1 : 0;
     const details = { today: todayCard, free: freeCard, week: weekCard, progress: progressCard, dates: datesCard, money: moneyCard, goals: goalsCard, cards: cardsCard, spaces: spacesCard, habits: habitsCard };
-    const tile = (key, cls, opens, label, ...children) => h(opens ? 'button' : 'div', { class: 'bento-tile ' + cls, 'data-bento': key, title: opens ? '点开看详细' : null,
-      onclick: opens ? (e) => (typeof opens === 'function' ? opens() : openBento(opens, e.currentTarget)) : null }, label ? h('span', { class: 'bento-label' }, label) : null, children);
-    const bigMinutes = (m) => (m < 100 ? [String(m), '分钟'] : [String(Math.round(m / 6) / 10), '小时']);
-    // A number tile holds one large number and one line of words, nothing else.
-    const numberTile = (key, cls, opens, label, value, unit, line) => tile(key, 'bt-num bt-' + cls, opens, label,
-      h('strong', { class: 'bento-num' + (String(value).length > 3 ? ' long' : '') }, value, unit ? h('small', {}, unit) : null), h('span', { class: 'bento-line' }, line));
+    const tile = bentoTile, numberTile = bentoNumber;
 
     const [focusValue, focusUnit] = bigMinutes(n.focus);
     const firstDate = dates[0];
@@ -3192,6 +3213,13 @@
     $('.home-scroll').scrollTop = scrollAt;
     tick();
   }
+  /* Tiles shared by the workbench and the review page. `opens` names the detail a tile grows into, or is a function to run. */
+  const bentoTile = (key, cls, opens, label, ...children) => h(opens ? 'button' : 'div', { class: 'bento-tile ' + cls, 'data-bento': key, title: opens ? '点开看详细' : null,
+    onclick: opens ? (e) => (typeof opens === 'function' ? opens() : openBento(opens, e.currentTarget)) : null }, label ? h('span', { class: 'bento-label' }, label) : null, children);
+  const bigMinutes = (m) => (m < 100 ? [String(m), '分钟'] : [String(Math.round(m / 6) / 10), '小时']);
+  // A number tile holds one large number and one line of words, nothing else.
+  const bentoNumber = (key, cls, opens, label, value, unit, line, long) => bentoTile(key, 'bt-num bt-' + cls, opens, label,
+    h('strong', { class: 'bento-num' + (long || String(value).length > 3 ? ' long' : '') }, value, unit ? h('small', {}, unit) : null), h('span', { class: 'bento-line' }, line));
   /* A tile grows from where it sits into a large panel in about 400 ms; its detail fades in, the rest of the
      page dims and stays put. Closing shrinks it back into its tile. The panel's content is rebuilt with the page. */
   const bento = { key: null, root: null, panel: null, body: null, details: null, timer: null };
@@ -3321,7 +3349,7 @@
 
   function render() {
     if (ui.mode === 'home') ui.space = null; // the workbench is about everything, not one space
-    else closeBento(true);
+    else if (ui.mode !== 'review') closeBento(true);
     renderRail();
     renderList();
     $('#shell').classList.toggle('timetable-mode', ui.mode === 'timetable' || ui.mode === 'week' || ui.mode === 'home' || ui.mode === 'review' || ui.mode === 'money');
