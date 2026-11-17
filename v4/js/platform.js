@@ -134,6 +134,7 @@
         return P.parseChat(agent, await nativeRequest(call, signal));
       },
       openFloating: () => webview.postMessage({ kind: 'timer-open' }),
+      notify: (title, text) => webview.postMessage({ kind: 'notify', title: String(title).slice(0, 60), text: String(text).slice(0, 240) }),
       updateTimer: (view) => webview.postMessage({ kind: 'timer-state', view }),
       onTimerCommand: (callback) => webview.addEventListener('message', (event) => {
         if (event.data && event.data.kind === 'timer-command') callback(event.data.command);

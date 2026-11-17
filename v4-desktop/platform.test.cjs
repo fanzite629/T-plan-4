@@ -58,3 +58,10 @@ test('native timer commands route to UI and arbitrary file reads fail immediatel
   await assert.rejects(h.p.readPath('C:\\test.txt'), /附件/);
   assert.equal(h.sent.length, 0);
 });
+
+test('desktop reminder uses the native bridge with bounded content', () => {
+  const h = harness(); h.p.notify('专注到时间了', '休息 5 分钟');
+  assert.equal(h.sent[0].kind, 'notify'); assert.equal(h.sent[0].text, '休息 5 分钟');
+  h.p.notify('x'.repeat(80), 'x'.repeat(300));
+  assert.equal(h.sent[1].title.length, 60); assert.equal(h.sent[1].text.length, 240);
+});

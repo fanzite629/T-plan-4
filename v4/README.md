@@ -1,4 +1,4 @@
-# T计划 v4.1 Web frontend
+# T计划 v4.2 Web frontend
 
 中文项目介绍与运行方法见 [仓库首页](../README.md)，课表操作见 [课表导入指南](../docs/TIMETABLE.md)。
 
@@ -12,7 +12,7 @@ button for local files; arbitrary disk-path reading is not enabled in this versi
 
 ## Run
 
-For Windows, extract the complete desktop ZIP and launch `package-4.1/T计划 v4.exe`. It includes its
+For Windows, extract the complete desktop ZIP and launch `package-4.2/T计划 v4.exe`. It includes its
 WebView2 runtime, stores v4 data separately in `%LOCALAPPDATA%/TPlanV4`, and provides a native
 floating timer. Provider keys are encrypted with Windows DPAPI. See the desktop README for builds.
 
@@ -42,7 +42,7 @@ exports and the planning assistant receives confirmed course times for the next 
 
 | Part | What it does |
 | --- | --- |
-| First-run interview | Three questions answered by clicking: focus length, daily time, best time of day |
+| First-use welcome | Nickname, purposes, focus duration, planning pace and reminder preferences; optional daily capacity; shared editor in Settings. See [首次使用与偏好设置](../docs/ONBOARDING.md) |
 | Files | PDF, `.docx`, `.pptx`, `.xlsx`, text and source files are parsed on this computer into text |
 | Providers | Presets for DeepSeek, OpenAI, Anthropic, Doubao (Volcengine Ark) and Kimi (Moonshot). Paste a key to load the model list, pick a model, and run a connection test that also checks whether the model reads images |
 | Pictures | Dropped or pasted images are scaled down and sent to models that accept image input |
@@ -59,6 +59,7 @@ exports and the planning assistant receives confirmed course times for the next 
 | File | Purpose |
 | --- | --- |
 | `js/core.js` | Pure rules: state, action validation, proposals, timer, profile, model context, local parser |
+| `js/onboarding.js` | First-use welcome and reusable preference draft/save/cancel form |
 | `js/agent.js` | System prompt, reply protocol, tool loop |
 | `js/providers.js` | Provider presets and request shapes for listing models and chatting |
 | `js/files.js` | File-to-text parsing (ZIP/XML reader for Office files, pdf.js for PDF) |

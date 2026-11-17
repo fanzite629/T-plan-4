@@ -41,7 +41,7 @@ test('validateActions keeps good actions and reports bad ones', () => {
     { type: 'format_disk' },
     { type: 'add_habit', title: 'Run', perWeek: 30 },
   ]);
-  assert.deepEqual(actions[0], { type: 'add_task', title: 'Write outline', date: null, minutes: 30, spaceId: 'space_1' });
+  assert.deepEqual(actions[0], { type: 'add_task', title: 'Write outline', date: null, minutes: 25, spaceId: 'space_1' });
   assert.equal(actions[1].perWeek, 7);
   assert.equal(rejected.length, 2);
 });
@@ -131,13 +131,15 @@ test('timer walks the steps, records real minutes, and completes the task', () =
   assert.equal(r.state.sessions.length, 2);
   const skipped = C.finishStep(C.startTimer(stateWithTask(), 't1', 0), 20000);
   assert.equal(skipped.session, null, 'a step skipped within a minute leaves no record');
-  assert.equal(skipped.state.tasks[0].done, true);
+  assert.equal(skipped.state.tasks[0].done, false, 'remaining generated segment is still pending');
+  assert.equal(C.finishStep(skipped.state, 40000).state.tasks[0].done, true);
 });
 
 test('stopping early records a partial session only after a minute', () => {
   let s = stateWithTask();
   s = C.startTimer(s, 't1', 0);
-  assert.equal(s.tasks[0].steps.length, 1, 'a task without steps is timed as one step');
+  assert.equal(s.tasks[0].steps.length, 2, 'a task without steps is split using the focus preference');
+  assert.equal(s.tasks[0].steps.reduce((n, step) => n + step.minutes, 0), 40);
   assert.equal(C.stopTimer(s, 30000).sessions.length, 0);
   const stopped = C.stopTimer(s, 12 * MIN);
   assert.equal(stopped.sessions[0].partial, true);

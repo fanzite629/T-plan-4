@@ -2,15 +2,15 @@
 
 一个以对话为入口的个人规划工具：把学习、项目和生活事项拆成可以开始执行的小任务，通过分段计时记录实际投入，并将课表作为规划时的已占用时间。
 
-本仓库收录 **v4 系列当前的 v4.1.0 源码**，包含浏览器页面、Windows x64 免安装桌面程序、课表导入、自动化测试和构建资源。桌面窗口名称仍为「T计划 v4」。
+本仓库收录 **v4 系列当前的 v4.2.0 源码**，包含浏览器页面、Windows x64 免安装桌面程序、课表导入、自动化测试和构建资源。桌面窗口名称仍为「T计划 v4」。
 
 ## 下载 Windows 免安装版
 
-**[下载 T计划 v4.1.0 Windows x64 ZIP](https://github.com/fanzite629/T-plan-4/releases/download/v4.1.0/TPlan-v4.1.0-Windows-x64-portable.zip)** · [发布说明与 SHA-256](https://github.com/fanzite629/T-plan-4/releases/tag/v4.1.0)
+**[下载 T计划 v4.2.0 Windows x64 ZIP](https://github.com/fanzite629/T-plan-4/releases/download/v4.2.0/TPlan-v4.2.0-Windows-x64-portable.zip)** · [发布说明与 SHA-256](https://github.com/fanzite629/T-plan-4/releases/tag/v4.2.0)
 
-1. 下载 `TPlan-v4.1.0-Windows-x64-portable.zip`，右键选择「全部解压缩」到本机文件夹。
-2. 打开解压后的 `package-4.1` 文件夹，双击 `T计划 v4.exe`。请保留同目录的 `app`、`runtime`、DLL 和许可文件。
-3. 首次打开即可新建任务和开始计时。导入课表时，先在「课表 → 学期与节次」保存学校作息，再拖入文件并核对预览。配置 AI 模型后可使用对话规划和模型识别。
+1. 下载 `TPlan-v4.2.0-Windows-x64-portable.zip`，右键选择「全部解压缩」到本机文件夹。
+2. 打开解压后的 `package-4.2` 文件夹，双击 `T计划 v4.exe`。请保留同目录的 `app`、`runtime`、DLL 和许可文件。
+3. 首次打开可填写称呼、用途、专注时长、安排节奏和提醒偏好，也可跳过；已有数据的用户正常进入工作台，在「设置 → 个人节奏」修改偏好。导入课表时，先在「课表 → 学期与节次」保存学校作息，再拖入文件并核对预览。配置 AI 模型后可使用对话规划和模型识别。
 
 适用于 Windows 10/11 x64，要求 .NET Framework 4.8。ZIP 已包含 WebView2 运行组件，解压后即可启动。详细设置和常见问题见 [Windows 免安装版使用指南](docs/WINDOWS.md)。
 
@@ -18,13 +18,14 @@
 
 | 功能 | 当前实现 |
 | --- | --- |
+| 首次使用与偏好 | 介绍功能、填写称呼，选择用途、专注时长、安排节奏、提醒及每日可投入时间；实际影响任务默认时长、分段、规划额度和提醒 |
 | 工作台 | 便当格布局：一张主角大卡（现在该做的事或正在跑的计时），其余小卡各说一件事（数字、进度、今天的路线、习惯开关）；点一张小卡原地展开成详情；卡片可隐藏和排序 |
 | 快速添加 | 一个聊天框添加课程、任务、考试与截止日期、收支：照模板打一行字，先看识别结果再确认，可撤销；任何页面按 N 打开 |
 | 重复任务 | 每天、每周几、工作日、每两周、每隔几天、每月几号；提前排好接下来 7 天，没开始做的一次在下一次到来时自动清掉 |
 | 标签 | 每个任务最多 6 个标签，任务栏按标签筛选，回看按标签统计时间 |
 | 空闲时段 | 工作台显示今天课与课之间的空闲并可一键排入任务；过期任务按每天可安排时间分到接下来几天，先预览再确认 |
 | 对话规划 | 支持任务、目标、习惯提议；确认后才写入安排，写入和删除可撤销；等待回答时可停止 |
-| 分段计时 | 暂停、继续、加时、下一段、完成；Windows 原生置顶计时小窗 |
+| 分段计时 | 暂停、继续、加时、下一段、完成；紧凑的 Windows 原生置顶小窗，与主界面配色一致，可收成专注条 |
 | 课表 | 学期与节次设置、周视图、当天课程、单双周、分段周次和指定日期；有开始时间的任务一并显示 |
 | 本周安排 | 七天分栏与本周未定，拖动改期，周重点与本周可投入时间 |
 | 时间记录 | 计时自动记录，可补记、修改和删除；一轮结束时可写下做了什么、卡在哪、下次从哪里继续 |
@@ -71,7 +72,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Get-WebView2.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\v4-desktop\build.ps1 -Zip
 ```
 
-默认运行入口为 `v4-desktop/package-4.1/T计划 v4.exe`；ZIP 位于 `v4-desktop/release/`。须保留同目录中的 `app/`、`runtime/`、DLL 和许可证文件。免安装指程序文件无需安装，个人数据仍保存在当前 Windows 用户目录。
+默认运行入口为 `v4-desktop/package-4.2/T计划 v4.exe`；ZIP 位于 `v4-desktop/release/`。须保留同目录中的 `app/`、`runtime/`、DLL 和许可证文件。免安装指程序文件无需安装，个人数据仍保存在当前 Windows 用户目录。
 
 固定依赖较大，下载需要网络。已有完整 WebView2 构建依赖时，可通过 `-VendorRoot '你的依赖目录'` 重用。具体步骤和校验要求见 [开发与构建](docs/DEVELOPMENT.md)。
 
@@ -113,12 +114,16 @@ references/            第三方功能设计参考资料
 ```powershell
 npm test
 # 等价命令
-node --test v4/core.test.cjs v4/timetable.test.cjs v4-desktop/platform.test.cjs
+node --test v4/core.test.cjs v4/preferences.test.cjs v4/timetable.test.cjs v4-desktop/platform.test.cjs
 ```
 
 C# 原生测试与 WebView2 界面自检见 [开发与构建](docs/DEVELOPMENT.md)。检查结果和未验证范围见 [验证记录](docs/VALIDATION.md)。
 
 ## 文档
+
+- [v4.2.0 发布与验证说明](docs/RELEASE_4.2.0.md)
+- [首次使用与偏好](docs/ONBOARDING.md)
+- [悬浮计时小窗](docs/FLOATING_TIMER.md)
 
 - [开发与构建](docs/DEVELOPMENT.md)
 - [Windows 免安装版使用指南](docs/WINDOWS.md)
